@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>對勘</title>
+<link rel="stylesheet" href="/static/app.css">
+<script>window.DK = { token: "__DK_TOKEN__", native: "__DK_NATIVE__" === "1" };</script>
+</head>
+<body>
+<div id="app" class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="seal">勘</div>
+      <div>
+        <div class="brand-name">對勘</div>
+        <div class="brand-sub">同源文本比對</div>
+      </div>
+    </div>
+    <div class="side-actions">
+      <button class="btn" id="add-file" title="加入 PDF、Word、TXT 等文件（也可直接拖進窗口）">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>加入文件</button>
+      <button class="btn" id="add-paste" title="貼上一段文字作為一個文本">
+        <svg viewBox="0 0 24 24"><rect x="6" y="4" width="12" height="16" rx="2"/><path d="M9 4.5h6v2.5H9z"/></svg>貼上文字</button>
+    </div>
+    <div class="side-h"><span>文本</span><span id="text-count" class="muted"></span></div>
+    <div id="texts" class="texts"></div>
+    <div class="side-foot">
+      <button class="side-set" id="open-settings" title="比對設定">
+        <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+        <span id="set-summary"></span>
+      </button>
+    </div>
+  </aside>
+  <main class="main">
+    <nav class="tabs" id="tabs">
+      <button data-tab="pair">兩本對讀</button>
+      <button data-tab="coll">多本對校</button>
+      <button data-tab="seg">檢索</button>
+      <button data-tab="over">總覽</button>
+      <button data-tab="guide">方法說明</button>
+    </nav>
+    <section class="view" id="view-pair"></section>
+    <section class="view" id="view-coll"></section>
+    <section class="view" id="view-seg"></section>
+    <section class="view" id="view-over"></section>
+    <section class="view" id="view-guide"></section>
+  </main>
+</div>
+<div id="drop" class="drop" hidden><div>放開即加入文本</div></div>
+<div id="layer"></div>
+<div id="toasts" class="toasts"></div>
+<input type="file" id="file-input" multiple hidden
+       accept=".pdf,.doc,.docx,.rtf,.odt,.txt,.md,.text,.html,.htm,.epub">
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# 構建產物（build_app.sh 會重新生成）
+build/
+# Python 緩存
+__pycache__/
+*.pyc
+# macOS
+.DS_Store
