@@ -33,6 +33,7 @@ from dk_norm import Normalizer, Prepared, parse_pairs, slice_pages  # noqa: E402
 
 STATIC = os.path.join(HERE, "static")
 VERSION = "1.0"
+SEARCH_CAP = 3000  # 檢索：命中處全部列出；每本逾 3000 處（極常見的詞）才截斷並註明，與通檢相同
 SIGLA = "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳午未申酉戌亥"
 
 DEFAULT_BIHUI = """# 避諱字對照：每行「本字 改字」，比對時遇到這些字的差異會標「疑諱」（只作提示，不影響對齊）。
@@ -1101,8 +1102,12 @@ class Handler(BaseHTTPRequestHandler):
             raise UserError("請輸入至少兩個字")
         if len(q) > 400:
             raise UserError("檢索句太長（%d 字）；句段對勘適合一句到一段話，長篇請用「兩本對讀」" % len(q))
-        mins = max(0.2, min(1.0, float(b.get("min") or 0.6)))
+        mins = 1.0 if b.get("exact") else max(0.2, min(1.0, float(b.get("min") or 0.6)))
+        short = mins < 1.0 and len(q) < 3   # 與通檢相同：不足三字的檢索詞不作模糊（差一字就是另一個詞）
+        if short:
+            mins = 1.0
         mode = "sent" if b.get("mode") == "sent" else "chars"
+        cap = SEARCH_CAP
         n = max(0, min(600, int(b.get("n") or 40)))
 
         def run(progress):
@@ -1115,8 +1120,9 @@ class Handler(BaseHTTPRequestHandler):
                 except UserError as e:
                     res.append({"id": tid, "error": str(e), "hits": []})
                     continue
-                res.append({"id": tid, "hits": phrase_hits(P, q, mins, mode, n)})
-            return {"q": q, "query": query, "results": res}
+                hits = phrase_hits(P, q, mins, mode, n, max_hits=cap)
+                res.append({"id": tid, "hits": hits, "capped": len(hits) >= cap})
+            return {"q": q, "query": query, "results": res, "cap": cap, "short": short}
         return App.jobs.start(run, "句段檢索", group="search")
 
     # ---------------------------------------------------------------- Word / Excel

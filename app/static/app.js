@@ -140,7 +140,7 @@ function dialog(title, body, buttons, wide) {
     const dlg = h("div", { class: "dialog" + (wide ? " " + (wide === true ? "wide" : wide) : "") }, h("div", { class: "dlg-h" }, title),
       h("div", { class: "dlg-b" }, body), foot);
     bd.append(dlg);
-    bd.addEventListener("mousedown", e => { if (e.target === bd) close(null); });
+    bd.addEventListener("mousedown", e => { if (e.target === bd && e.detail < 2) close(null); });
     const onKey = e => { if (e.key === "Escape") { e.stopPropagation(); close(null); } };
     document.addEventListener("keydown", onKey, true);
     $("#layer").append(bd);
@@ -1760,27 +1760,41 @@ function focusPage(it) {
   return (it.page0 || 1) + cps.filter(c => c === "\f").length;
 }
 // items：[{id, r0, r1, label?}]，第一個為參照；兩個時左右並排，多個時上下排列
+// opt.nav：{ n, i, get(i) → { items, same, info, side }, onGo(cur) }——在一串位置之間前後切換而不關彈窗（檢索結果）。
+// opt.sameLabel：單欄時，nav 給的 same（原文絕對位置）塗淡綠，圖例用這個說法。
 async function openContext(items, opt) {
   opt = opt || {};
+  const nav = opt.nav;
+  let navI = nav ? nav.i : 0, cur = nav ? nav.get(navI) : null;
+  if (cur) items = cur.items;
   let pad = S.ui.ctxPad || 300;
-  const modes = [];        // 各欄目前看文字還是原件；改上下文長度重載時沿用
+  const modes = [];        // 各欄目前看文字還是原件；改上下文長度、換一處時沿用
   let loaded = null;       // 當前顯示的內容，供匯出
-  const body = h("div", { class: "ctx-wrap show-same" + (items.length === 2 ? " cols" : "") });
+  let seq = 0;
+  const body = h("div", { class: "ctx-wrap show-same" + (items.length === 2 ? " cols" : "") + (items.length === 1 ? " single" : "") });
   const padSeg = h("div", { class: "seg" });
   const load = async () => {
+    const my = ++seq;
     $$("button", padSeg).forEach(b => b.classList.toggle("on", +b.dataset.p === pad));
-    body.innerHTML = "<div class='muted' style='padding:20px'>載入中…</div>";
+    if (loaded) body.classList.add("reloading");          // 換內容時舊的先淡出，不跳動
+    else body.innerHTML = "<div class='muted' style='padding:20px'>載入中…</div>";
     try {
       const d = await api("context", { items: items.map(x => ({ id: x.id, r0: x.r0, r1: x.r1 })), pad });
+      if (my !== seq) return;
+      body.classList.remove("reloading");
+      if (cur && cur.same) d.items.forEach((it, x) => {
+        const sm = cur.same[x], L = Array.from(it.text).length;
+        if (sm) it.same = sm.map(([a, c]) => [Math.max(0, a - it.w0), Math.min(L, c - it.w0)]).filter(([a, c]) => c > a);
+      });
       body.innerHTML = "";
       loaded = { its: d.items, srcs: items, pad, title: opt.title || "原文上下文", panels: [] };
-      d.items.forEach((it, x) => { const pn = ctxPanel(it, items[x], x, items.length, modes); loaded.panels.push(pn); body.append(pn); });
+      d.items.forEach((it, x) => { const pn = ctxPanel(it, Object.assign({ sameLabel: opt.sameLabel }, items[x]), x, items.length, modes); loaded.panels.push(pn); body.append(pn); });
       linkPanels(d.items, loaded.panels);
       requestAnimationFrame(() => $$(".ctx-text", body).forEach(box => {
         const f = $(".ctx-f, .ctx-caret", box);   // 用屏幕坐標算：文字框是定位容器（畫對應框用），offsetTop 的參照不同
         if (f) box.scrollTop += f.getBoundingClientRect().top - box.getBoundingClientRect().top - box.clientHeight / 3;
       }));
-    } catch (e) { body.innerHTML = ""; body.append(h("div", { class: "placeholder" }, e.message)); }
+    } catch (e) { if (my !== seq) return; body.classList.remove("reloading"); body.innerHTML = ""; body.append(h("div", { class: "placeholder" }, e.message)); }
   };
   for (const [p, lab] of CTX_PADS)
     padSeg.append(h("button", { "data-p": p, onclick: () => { pad = p; saveUI({ ctxPad: p }); load(); } }, lab));
@@ -1789,7 +1803,8 @@ async function openContext(items, opt) {
     h("span", { class: "legend" },
       multi ? sameLegend("與參照相同") : null,
       multi ? h("span", {}, h("i", { class: "plain-swatch" }), "未著色＝不同或參照所無") : null,
-      h("span", {}, h("i", { class: "focus-swatch" }), "所選位置"),
+      opt.sameLabel ? sameLegend(opt.sameLabel) : null,
+      h("span", {}, h("i", { class: "focus-swatch" }), opt.sameLabel ? "命中處" : "所選位置"),
       h("span", {}, h("span", { class: "ctx-caret", style: "margin:0 4px 0 2px" }), "此處無字"),
       multi ? h("span", {}, h("i", { class: "cp-swatch" }), "對應的一段") : null),
     h("button", { class: "btn", style: "margin-left:auto", onclick: e => loaded && menu(e.currentTarget, ctxExportItems(loaded)) }, "匯出 ▾"));
@@ -1806,9 +1821,42 @@ async function openContext(items, opt) {
     ? "第一欄是參照。淡綠標「異同」：與參照相同的字塗淡綠" + (items.length > 2 ? "（參照欄的淡綠＝各本皆同）" : "") +
       "。金色底線標「位置」：你雙擊進來的那一處，與異同無關——底線內沒有塗綠的字，就是那裡的異文。" +
       "鼠標停在任一欄的字上，各欄把對應的一段加框（到異文或句末為止；落在異文處框出整個不同的單位，另一本無字處畫小空框），不在視區內會捲過去；點擊可固定這組框，再點空白處取消。"
+    : opt.sameLabel ? "金色底線是當前這一處；塗淡綠的是與檢索句相同的字，上下文裡同一本的其他命中處也一併標出。" + (nav ? "按 ← → 或上面的按鈕看上一處、下一處（看原件時 ← → 翻頁）。" : "")
     : "金色底線是你雙擊進來的那一處。");
+  // 前後切換
+  let navBar = null, go = null, onKey = null;
+  if (nav) {
+    const prev = h("button", { class: "btn", title: "上一處（←）", onclick: () => go(-1) }, "‹ 上一處");
+    const next = h("button", { class: "btn", title: "下一處（→）", onclick: () => go(1) }, "下一處 ›");
+    const pos = h("span", { class: "ctx-nav-pos" }), info = h("span", { class: "ctx-nav-info" }), side = h("span", { class: "ctx-nav-side" });
+    const show = () => {
+      pos.textContent = `第 ${navI + 1}／${nav.n} 處`;
+      prev.disabled = navI <= 0; next.disabled = navI >= nav.n - 1;
+      info.innerHTML = ""; info.append(...(cur.info || []));
+      side.innerHTML = ""; if (cur.side) side.append(cur.side);
+    };
+    go = d => {
+      const j = navI + d;
+      if (j < 0 || j >= nav.n) return;
+      navI = j; cur = nav.get(j); items = cur.items;
+      show();
+      if (nav.onGo) nav.onGo(cur);
+      load();
+    };
+    onKey = e => {
+      if ((e.key !== "ArrowLeft" && e.key !== "ArrowRight") || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (e.target.closest && e.target.closest(".pdfv, input, textarea, select")) return;   // 原件裡的 ← → 是翻頁
+      e.preventDefault();
+      go(e.key === "ArrowLeft" ? -1 : 1);
+    };
+    navBar = h("div", { class: "ctx-nav" }, prev, pos, next, info, side);
+    show();
+    if (nav.onGo) nav.onGo(cur);
+    document.addEventListener("keydown", onKey);
+  }
   load();
-  await dialog(opt.title || "原文上下文", [bar, note, body], [{ label: "關閉", cls: "primary" }], "xwide");
+  await dialog(opt.title || "原文上下文", [navBar, bar, note, body].filter(Boolean), [{ label: "關閉", cls: "primary" }], "xwide");
+  if (onKey) document.removeEventListener("keydown", onKey);
 }
 function ctxPanel(it, src, x, n, modes) {
   const t = T(src.id);
@@ -1818,7 +1866,7 @@ function ctxPanel(it, src, x, n, modes) {
     x === 0 && n > 1 ? h("span", { class: "chip" }, "參照") : null);
   const panel = h("div", { class: "ctx-panel" }, head, textBox);
   if (it.pdf) {
-    const viewer = pdfViewer(src.id, it, n > 1);
+    const viewer = pdfViewer(src.id, it, n > 1 || src.sameLabel || false);
     const bText = h("button", { class: "on" }, "文字"), bImg = h("button", {}, "原件");
     const mode = img => {
       bImg.classList.toggle("on", img); bText.classList.toggle("on", !img);
@@ -1924,7 +1972,7 @@ function pdfViewer(id, it, compared) {
     }
   }
   function updHint() {
-    hint.textContent = marked ? (compared ? "框＝所選位置　綠＝與參照相同" : "框＝所選位置")
+    hint.textContent = marked ? (compared ? "框＝所選位置　綠＝" + (typeof compared === "string" ? compared : "與參照相同") : "框＝所選位置")
       : unmarked ? "此頁沒有文字層，無法在原件上標注" : "";
   }
   // 各頁高寬比：第一頁載入後作為其餘未載入頁的默認值；在視區之上的頁變高變矮時，眼前的內容不動
@@ -3591,13 +3639,20 @@ function renderSeg() {
   const st = S.search || {};
   const q = h("textarea", { class: "seg-q", rows: 2, spellcheck: "false",
     placeholder: "輸入要追蹤的一句或一段話，例如：朕死無面目見祖宗於地下。簡繁、有無標點均可；各本中的異文、脫衍也找得到。" });
-  q.value = st.query || S.ui.segQuery || "";
+  q.value = st.query || S.segDraft || "";
   const scope = h("select", {}, h("option", { value: "on" }, "勾選的文本"), h("option", { value: "all" }, "全部文本"));
   scope.value = S.ui.segScope || "on";
   const minIn = h("input", { type: "range", min: 30, max: 100, step: 1 });
   minIn.value = Math.round((S.ui.segMin || 0.6) * 100);
   const minOut = h("output", {}, minIn.value + "%");
   minIn.oninput = () => { minOut.textContent = minIn.value + "%"; };
+  // 精確：歸一後字字相同（簡繁、異體、標點仍不拘），列出全部；模糊：容許異文、脫衍，按最低相似度
+  const exact = h("select", {}, h("option", { value: "" }, "模糊（容許異文、脫衍）"), h("option", { value: "1" }, "精確（字字相同）"));
+  exact.value = S.ui.segExact ? "1" : "";
+  const minLab = h("label", { title: "與檢索句相比至少有多少相同（容許異文、脫衍）" }, "最低相似度 ", minIn, minOut);
+  const syncExact = () => { minIn.disabled = !!exact.value; minLab.classList.toggle("dim", !!exact.value); };
+  syncExact();
+  exact.addEventListener("change", syncExact);
   const mode = h("select", {}, h("option", { value: "sent" }, "延伸到所在句子"), h("option", { value: "chars" }, "前後固定字數"));
   mode.value = S.ui.segMode || "sent";
   const nIn = h("input", { type: "range", min: 0, max: 200, step: 5 });
@@ -3607,28 +3662,28 @@ function renderSeg() {
   let composing = false;
   q.addEventListener("compositionstart", () => { composing = true; });
   q.addEventListener("compositionend", () => { composing = false; segFollow(); });
-  q.addEventListener("input", () => { if (!composing) segFollow(); });
+  q.addEventListener("input", () => { S.segDraft = q.value; if (!composing) segFollow(); });
   q.addEventListener("keydown", e => {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); segFollow(true); }
-    if (e.key === "Escape" && q.value) { e.preventDefault(); q.value = ""; segFollow(true); }
+    if (e.key === "Escape" && q.value) { e.preventDefault(); q.value = S.segDraft = ""; segFollow(true); }
   });
-  for (const el of [scope, mode]) el.addEventListener("change", () => segFollow(true));
+  for (const el of [scope, mode, exact]) el.addEventListener("change", () => segFollow(true));
   for (const el of [minIn, nIn]) el.addEventListener("change", () => segFollow(true));
   v.append(h("div", { class: "seg-top" }, q, h("div", { class: "seg-opts" },
     h("label", {}, "範圍 ", scope),
-    h("label", { title: "與檢索句相比至少有多少相同（容許異文、脫衍）" }, "最低相似度 ", minIn, minOut),
+    h("label", {}, "方式 ", exact), minLab,
     h("label", { title: "對校時，從命中處向外延伸的範圍；無標點的文本按字數" }, "對校片段 ", mode, "　至多 ", nIn, nOut),
     h("span", { class: "muted", style: "margin-left:auto;font-size:11.5px" }, "輸入即檢索；清空輸入框（或按 Esc）即清空結果"))));
   const res = h("div", { class: "seg-res show-same" });
   const foot = h("div", { class: "seg-foot" });
   v.append(res, foot);
-  S.segUI = { q, scope, minIn, mode, nIn, res, foot };
+  S.segUI = { q, scope, minIn, exact, mode, nIn, res, foot };
   if (st.results && S.segDirty && q.value.trim()) { segFollow(true); return; }
   if (st.results) drawSearch();
   else res.append(h("div", { class: "placeholder", html: `<h3>檢索</h3>
     聚焦一句話或一段話：在各文本中找出它的對應文字（容許異文、脫衍、改寫），再把找到的幾處逐字對校。<br>
     例如追蹤崇禎遺詔「朕死無面目見祖宗於地下」在各種甲申史料中的不同說法。<br>
-    <span class="muted">找到後：勾選要比較的幾處，點「參照」選定底本，再點「對校所選」；雙擊任一處看原文上下文。</span>` }));
+    <span class="muted">找到後：雙擊任一處看原文上下文（彈窗裡可逐處往下看）。要逐字對校時，勾選幾處（先勾的一處為參照，可改），再點「對校所選」。</span>` }));
 }
 let segTimer = null, searchSeq = 0;
 function segFollow(now) {
@@ -3638,7 +3693,7 @@ function segFollow(now) {
     if (!U) return;
     const query = U.q.value.trim();
     if (Array.from(query.replace(/[\s\p{P}]/gu, "")).length < 2) {
-      if (S.search) { S.search = null; searchSeq++; saveUI({ segQuery: query }); renderSeg(); }
+      if (S.search) { S.search = null; searchSeq++; renderSeg(); }
       return;
     }
     runSearch();
@@ -3653,24 +3708,22 @@ async function runSearch() {
   const ids = (U.scope.value === "all" ? S.texts.filter(t => !t.err) : onTexts()).map(t => t.id);
   if (!ids.length) { toast("沒有可檢索的文本（請在左側勾選）", true); return; }
   const min = +U.minIn.value / 100;
-  saveUI({ segQuery: query, segScope: U.scope.value, segMin: min, segMode: U.mode.value, segN: +U.nIn.value });
+  const ex = !!U.exact.value;
+  saveUI({ segScope: U.scope.value, segMin: min, segExact: ex, segMode: U.mode.value, segN: +U.nIn.value });
   U.foot.innerHTML = "";
   const prog = S.search ? (() => {}) : busy(U.res, "檢索中…");
   if (S.search) updating("seg", true);
   try {
-    const r = await runJob(api("search", { q: query, ids, min, mode: U.mode.value, n: +U.nIn.value }), prog);
+    const r = await runJob(api("search", { q: query, ids, min, exact: ex, mode: U.mode.value, n: +U.nIn.value }), prog);
     if (seq !== searchSeq) return;
     updating("seg", false);
-    // 默認：每本選相似度最高的一處；參照取第一本的最佳命中
+    // 不預選：檢索只是檢索，要對校時再勾選。同一句重算（如換了勾選的文本）時保留仍在的勾選與參照
+    const old = S.search && S.search.query === query && S.search.exact === ex ? S.search : null;
+    const keys = new Set(r.results.flatMap(g => g.hits.map(hh => g.id + ":" + hh.s)));
     const sel = {};
-    let base = null;
-    for (const g of r.results) {
-      if (!g.hits.length) continue;
-      const best = g.hits.reduce((a, b) => (b.sim > a.sim ? b : a));
-      sel[g.id + ":" + best.s] = true;
-      if (!base) base = g.id + ":" + best.s;
-    }
-    S.search = { query, q: r.q, results: r.results, sel, base };
+    if (old) for (const k of Object.keys(old.sel)) if (keys.has(k)) sel[k] = true;
+    const base = old && old.base && sel[old.base] ? old.base : null;
+    S.search = { query, q: r.q, results: r.results, sel, base, exact: ex, short: r.short, cur: old && keys.has(old.cur) ? old.cur : null };
     drawSearch();
   } catch (e) {
     if (e.cancelled || seq !== searchSeq) return;
@@ -3692,76 +3745,131 @@ function setCur(row) {
   $$(".seg-hit.cur", S.segUI.res).forEach(r => r.classList.toggle("cur", false));
   row.classList.add("cur");
 }
+// 檢索結果的排序：原文順序（各本按文本列表次序，本內按位置）、相似度高低
+const SEG_SORTS = { pos: "原文順序", simd: "相似度 高→低", sima: "相似度 低→高" };
+function searchEntries() {
+  const st = S.search, out = [];
+  st.results.forEach((g, gi) => {
+    if (!T(g.id)) return;
+    for (const hit of g.hits) out.push({ g, gi, t: T(g.id), hit, k: g.id + ":" + hit.s });
+  });
+  const pos = (a, b) => a.gi - b.gi || a.hit.s - b.hit.s;
+  const k = S.ui.segSort;
+  out.sort(k === "simd" ? (a, b) => b.hit.sim - a.hit.sim || pos(a, b) : k === "sima" ? (a, b) => a.hit.sim - b.hit.sim || pos(a, b) : pos);
+  return out;
+}
+// 列表與彈窗前後切換共用的次序
+function searchOrder() {
+  const st = S.search, all = searchEntries();
+  if (S.ui.segGroup === false) return all;
+  const out = [];
+  st.results.forEach((g, gi) => { for (const e of all) if (e.gi === gi) out.push(e); });
+  return out;
+}
+// 與通檢一樣：命中處全部列出，列表先顯示一部分，「顯示更多」再展開（分組時每本先顯示 30 處，混排時先顯示 200 處）
+const SEG_PAGE = { group: 30, flat: 200, more: 300 };
+function segShown(key, n) {
+  const st = S.search;
+  st.shown = st.shown || {};
+  if (n != null) st.shown[key] = n;
+  return st.shown[key] || (key === "*flat" ? SEG_PAGE.flat : SEG_PAGE.group);
+}
 function drawSearch() {
   const U = S.segUI, st = S.search;
   if (!U.res.classList.contains("kbd-list"))
     listKeys(U.res, { items: () => $$(".seg-hit", U.res), cur: () => $(".seg-hit.cur", U.res),
       go: row => { setCur(row); row.scrollIntoView({ block: "nearest" }); },
-      enter: row => row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
+      enter: row => openSearchHit(row.dataset.k),
       space: row => { const cb = $("input[type=checkbox]", row); if (cb) cb.click(); } });
   const top = U.res.scrollTop;
   U.res.innerHTML = "";
-  let n = 0;
+  const grouped = S.ui.segGroup !== false;
+  const sortSel = h("select", { title: "結果的排列次序", onchange: e => { saveUI({ segSort: e.target.value }); drawSearch(); } },
+    ...Object.entries(SEG_SORTS).map(([v, l]) => h("option", { value: v }, l)));
+  sortSel.value = SEG_SORTS[S.ui.segSort] ? S.ui.segSort : "pos";
+  const groupCb = h("input", { type: "checkbox", onchange: e => { saveUI({ segGroup: e.target.checked }); drawSearch(); } });
+  groupCb.checked = grouped;
   U.res.append(h("div", { class: "seg-legend" },
     h("span", { class: "legend" }, sameLegend("與檢索句相同"), h("span", {}, h("i", { class: "focus-swatch" }), "命中處")),
-    h("span", { class: "muted" }, "雙擊一處：看原文上下文（已選參照時與參照並排對照）")));
-  for (const g of st.results) {
-    const t = T(g.id);
-    if (!t) continue;
-    const box = h("div", { class: "seg-group" }, h("div", { class: "seg-gh" }, h("span", { class: "t-sig" }, t.siglum), h("b", {}, t.name),
-      h("span", { class: "muted" }, g.error ? g.error : (g.hits.length ? `${g.hits.length} 處` : "未找到"))));
-    for (const hit of g.hits) {
-      n++;
-      const k = g.id + ":" + hit.s;
-      const cb = h("input", { type: "checkbox", title: "選入對校" });
-      cb.checked = !!st.sel[k];
-      cb.onchange = () => {
-        if (cb.checked) st.sel[k] = true;
-        else { delete st.sel[k]; if (st.base === k) st.base = Object.keys(st.sel)[0] || null; }
-        drawSearch();
-      };
-      const rb = h("input", { type: "radio", name: "seg-base", title: "以此處為參照（底本）" });
-      rb.checked = st.base === k;
-      rb.onchange = () => { st.base = k; st.sel[k] = true; drawSearch(); };
-      const row = h("div", { class: "seg-hit" + (st.sel[k] ? " on" : "") + (st.base === k ? " base" : "") + (st.cur === k ? " cur" : ""), "data-k": k },
-        h("div", { class: "seg-hc" }, cb, h("label", { class: "chk muted", style: "font-size:11px" }, rb, "參照")),
-        h("div", { class: "seg-hm" }, h("span", { class: "chip" + (hit.sim >= 0.95 ? "" : " warn"), title: "與檢索句的相似度" }, pct(hit.sim, 0)),
-          h("span", { class: "muted" }, locStr(hit.loc, t)),
-          h("button", { class: "btn ghost hit-more", title: "匯出、複製此處", onclick: e => { e.stopPropagation(); hitMenu(e.currentTarget, k); } }, "⋯")),
-        h("div", { class: "seg-snip", html: ctxHTML(hit) }));
-      row.addEventListener("click", e => { if (!e.target.closest("input,label,button")) setCur(row); });
-      onCtx(row, () => {
-        setCur(row);
-        return [
-          { label: st.base && st.base !== k ? "看原文上下文（與參照並排）" : "看原文上下文", act: () => row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })) },
-          { label: st.sel[k] ? "取消選入對校" : "選入對校", act: () => cb.click() },
-          { label: st.base === k ? "已是參照（底本）" : "設為參照（底本）", act: () => { rb.checked = true; rb.dispatchEvent(new Event("change")); }, disabled: st.base === k },
-          "-",
-          ...hitItems(k).filter(x => x.label !== "看原文上下文"),
-        ];
-      });
-      row.addEventListener("dblclick", e => {
-        if (e.target.closest("input,label")) return;
-        window.getSelection().removeAllRanges();
-        const me = { id: g.id, r0: hit.r0 + hit.focus[0], r1: hit.r0 + hit.focus[1] };
-        if (st.base && st.base !== k) {
-          const b = segFind(st.base);
-          if (b.hit) {
-            openContext([{ id: b.id, r0: b.hit.r0 + b.hit.focus[0], r1: b.hit.r0 + b.hit.focus[1] }, me], { title: "原文上下文（左：參照）" });
-            return;
-          }
-        }
-        openContext([me], { title: "原文上下文" });
-      });
-      box.append(row);
-    }
+    h("span", { class: "muted" }, "雙擊一處：看原文上下文；勾選幾處，再點「對校所選」逐字對校"),
+    h("span", { class: "seg-sort" }, h("label", {}, "排序 ", sortSel), h("label", { class: "chk" }, groupCb, "按文本分組"))));
+  const entries = searchEntries();
+  const count = g => g.error ? g.error : !g.hits.length ? "未找到"
+    : g.hits.length.toLocaleString() + " 處" + (g.capped ? `（超過 ${g.hits.length.toLocaleString()} 處，只列出${st.exact ? "前" : "最相近的"} ${g.hits.length.toLocaleString()} 處）` : "");
+  // 「顯示更多」
+  const moreBar = (left, key, shown) => h("div", { class: "seg-more" },
+    h("button", { class: "btn", onclick: () => { segShown(key, shown + SEG_PAGE.more); drawSearch(); } },
+      `顯示更多（還有 ${left.toLocaleString()} 處）`),
+    left > SEG_PAGE.more ? h("button", { class: "btn ghost", onclick: () => { segShown(key, shown + left); drawSearch(); } }, "全部顯示") : null);
+  const rowOf = ({ g, t, hit, k }) => {
+    const cb = h("input", { type: "checkbox", title: "選入對校" });
+    cb.checked = !!st.sel[k];
+    cb.onchange = () => {
+      if (cb.checked) { st.sel[k] = true; if (!st.base) st.base = k; }   // 先勾的一處為參照
+      else { delete st.sel[k]; if (st.base === k) st.base = Object.keys(st.sel)[0] || null; }
+      drawSearch();
+    };
+    const rb = h("input", { type: "radio", name: "seg-base", title: "以此處為參照（底本）" });
+    rb.checked = st.base === k;
+    rb.onchange = () => { st.base = k; st.sel[k] = true; drawSearch(); };
+    const row = h("div", { class: "seg-hit" + (st.sel[k] ? " on" : "") + (st.base === k ? " base" : "") + (st.cur === k ? " cur" : ""), "data-k": k },
+      // 「參照」只在勾選後出現
+      h("div", { class: "seg-hc" }, cb, h("label", { class: "chk muted", style: "font-size:11px" + (st.sel[k] ? "" : ";visibility:hidden") }, rb, "參照")),
+      h("div", { class: "seg-hm" }, h("span", { class: "chip" + (hit.sim >= 0.95 ? "" : " warn"), title: "與檢索句的相似度" }, pct(hit.sim, 0)),
+        h("span", { class: "muted" }, (grouped ? "" : t.siglum + " ") + locStr(hit.loc, t)),
+        h("button", { class: "btn ghost hit-more", title: "匯出、複製此處", onclick: e => { e.stopPropagation(); hitMenu(e.currentTarget, k); } }, "⋯")),
+      h("div", { class: "seg-snip", html: ctxHTML(hit) }));
+    row.addEventListener("click", e => { if (!e.target.closest("input,label,button")) setCur(row); });
+    row.addEventListener("dblclick", e => {
+      if (e.target.closest("input,label,button")) return;
+      window.getSelection().removeAllRanges();
+      openSearchHit(k);
+    });
+    onCtx(row, () => {
+      setCur(row);
+      return [
+        { label: "看原文上下文", act: () => openSearchHit(k) },
+        st.base && st.base !== k && { label: "與參照並排看原文", act: () => openSearchHit(k, true) },
+        { label: st.sel[k] ? "取消選入對校" : "選入對校", act: () => cb.click() },
+        { label: st.base === k ? "已是參照（底本）" : "設為參照（底本）", act: () => { rb.checked = true; rb.dispatchEvent(new Event("change")); }, disabled: st.base === k },
+        "-",
+        ...hitItems(k).filter(x => x.label !== "看原文上下文"),
+      ];
+    });
+    return row;
+  };
+  // 各本命中多少處（分組時點擊即跳到那一本）
+  const heads = {};
+  U.res.append(h("div", { class: "seg-counts" }, ...st.results.filter(g => T(g.id)).map(g =>
+    h("span", { class: grouped && g.hits.length ? "go" : "", title: grouped && g.hits.length ? "跳到這一本的結果" : "",
+      onclick: () => { if (grouped && heads[g.id]) heads[g.id].scrollIntoView({ block: "start" }); } },
+      h("b", {}, T(g.id).siglum), " " + count(g))),
+    h("span", { class: "muted" }, `共 ${entries.length.toLocaleString()} 處` + (st.short ? "（檢索詞不足三字，按精確檢索）" : ""))));
+  if (grouped) {
+    st.results.forEach((g, gi) => {
+      const t = T(g.id);
+      if (!t) return;
+      const head = h("div", { class: "seg-gh" }, h("span", { class: "t-sig" }, t.siglum), h("b", {}, t.name),
+        h("span", { class: "muted" }, count(g)));
+      heads[g.id] = head;
+      const box = h("div", { class: "seg-group" }, head);
+      const list = entries.filter(e => e.gi === gi), shown = segShown(g.id);
+      for (const e of list.slice(0, shown)) box.append(rowOf(e));
+      if (list.length > shown) box.append(moreBar(list.length - shown, g.id, shown));
+      U.res.append(box);
+    });
+  } else {
+    // 不分組：各本混排，每處標出是哪一本
+    const box = h("div", { class: "seg-group" }), shown = segShown("*flat");
+    for (const e of entries.slice(0, shown)) box.append(rowOf(e));
+    if (entries.length > shown) box.append(moreBar(entries.length - shown, "*flat", shown));
     U.res.append(box);
   }
   U.res.scrollTop = top;
   const nsel = Object.keys(st.sel).length;
   const b = st.base ? segFind(st.base) : null;
   U.foot.innerHTML = "";
-  U.foot.append(h("span", {}, `共 ${n} 處，已選 `, h("b", {}, nsel), " 處",
+  U.foot.append(h("span", {}, `共 ${entries.length} 處，已選 `, h("b", {}, nsel), " 處",
     b && b.hit ? h("span", { class: "muted" }, `；參照：${T(b.id).siglum} ${locStr(b.hit.loc, T(b.id))}`) : null),
     h("span", { class: "sp" }),
     h("span", { class: "muted", style: "font-size:11.5px" }, "各處片段會按參照片段的範圍自動對準"),
@@ -3846,6 +3954,60 @@ function searchExportMenu(btn) {
   ]);
 }
 function hitMenu(btn, k) { menu(btn, hitItems(k)); }
+// 打開一處命中的原文上下文。pair：與參照並排；否則按列表當前的次序，可在彈窗裡逐處前後切換
+function openSearchHit(k, pair) {
+  const st = S.search, me = segFind(k);
+  if (!me.hit) return;
+  const at = x => ({ id: x.id, r0: x.hit.r0 + x.hit.focus[0], r1: x.hit.r0 + x.hit.focus[1] });
+  const b = pair && st.base && st.base !== k ? segFind(st.base) : null;
+  if (pair) {
+    if (b && b.hit) openContext([at(b), at(me)], { title: "原文上下文（左：參照）" });
+    return;
+  }
+  const order = searchOrder(), keys = order.map(e => e.k);
+  if (!keys.includes(k)) return;
+  const rowOf = kk => $$(".seg-hit", S.segUI.res).find(r => r.dataset.k === kk);
+  // 列表裡還沒顯示到這一處：展開到那裡
+  const reveal = kk => {
+    if (rowOf(kk)) return;
+    const e = order.find(x => x.k === kk), grouped = S.ui.segGroup !== false;
+    const key = grouped ? e.g.id : "*flat";
+    const idx = grouped ? order.filter(x => x.gi === e.gi).indexOf(e) : order.indexOf(e);
+    segShown(key, Math.max(segShown(key), idx + 1 + 20));
+    drawSearch();
+  };
+  openContext(null, { title: `檢索：「${st.query}」`, sameLabel: "與檢索句相同", nav: {
+    n: keys.length, i: keys.indexOf(k),
+    get: i => {
+      const kk = keys[i], x = segFind(kk), hit = x.hit;
+      // 選入對校：在彈窗裡也能勾
+      const cb = h("input", { type: "checkbox" });
+      cb.checked = !!st.sel[kk];
+      cb.onchange = () => {
+        if (cb.checked) { st.sel[kk] = true; if (!st.base) st.base = kk; }
+        else { delete st.sel[kk]; if (st.base === kk) st.base = Object.keys(st.sel)[0] || null; }
+        drawSearch();
+      };
+      // 與檢索句相同的字（原文絕對位置）：這一處，及上下文窗口裡同一本的其他命中處
+      const g = st.results.find(gg => gg.id === x.id);
+      const same = [];
+      for (const hh of g.hits) if (Math.abs(hh.r0 - hit.r0) < 6000) for (const [a, c] of hh.same || []) same.push([hh.r0 + a, hh.r0 + c]);
+      same.sort((u, v) => u[0] - v[0]);
+      return {
+        k: kk, items: [at(x)], same: [same],
+        info: [h("span", { class: "chip" + (hit.sim >= 0.95 ? "" : " warn"), title: "與檢索句的相似度" }, "相似度 " + pct(hit.sim, 0)),
+          h("span", { class: "ctx-nav-hit", title: "命中的文字；〔〕內與檢索句不同" }, hitMarked(hit))],
+        side: h("label", { class: "chk", title: "勾選的幾處可在檢索頁「對校所選」" }, cb, "選入對校"),
+      };
+    },
+    onGo: cur => {
+      st.cur = cur.k;
+      reveal(cur.k);
+      const row = rowOf(cur.k);
+      if (row) { setCur(row); row.scrollIntoView({ block: "nearest" }); }
+    },
+  } });
+}
 function hitItems(k) {
   const it = searchItems(k)[0];
   return ([
@@ -3856,7 +4018,7 @@ function hitItems(k) {
       const ok = await copyText(`${it.t.siglum}《${it.t.name}》${locStr(it.hit.loc, it.t)}：${pp.before}【${pp.segs.map(x => x[0]).join("")}】${pp.after}`);
       toast(ok ? "已複製" : "複製失敗", !ok);
     } },
-    { label: "看原文上下文", act: () => openContext([{ id: it.g.id, r0: it.hit.r0 + it.hit.focus[0], r1: it.hit.r0 + it.hit.focus[1] }], { title: "原文上下文" }) },
+    { label: "看原文上下文", act: () => openSearchHit(k) },
   ]);
 }
 function searchPrompt() {

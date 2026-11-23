@@ -159,6 +159,13 @@ def find_phrase(P, q, min_sim=0.6, max_hits=12):
     T = P.norm
     if not m or not T:
         return []
+    if min_sim >= 1.0:
+        # 精確檢索：歸一後逐字相同，直接找出全部（至多 max_hits 處）
+        out, j = [], T.find(q)
+        while j >= 0 and len(out) < max_hits:
+            out.append((j, j + m, 0))
+            j = T.find(q, j + m)
+        return out
     maxd = int(m * (1 - min_sim))
     k = 1 if m <= 4 else (2 if m < 16 else 3)
     band = max(8, m // 3)
@@ -173,7 +180,7 @@ def find_phrase(P, q, min_sim=0.6, max_hits=12):
             hits += 1
             j = T.find(g, j + 1)
     need = max(1, int((m - k + 1) * min_sim * 0.5))
-    cands = sorted([b for b, v in votes.items() if v >= need], key=lambda b: -votes[b])[:200]
+    cands = sorted([b for b, v in votes.items() if v >= need], key=lambda b: -votes[b])[:max(200, 2 * max_hits)]
     if not cands:
         return []
     # 相鄰候選合併成窗口
