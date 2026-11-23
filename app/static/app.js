@@ -332,6 +332,7 @@ async function loadState() {
   const d = await api("state");
   S.texts = d.texts; S.settings = d.settings; S.defaults = d.defaults; S.ui = d.ui || {};
   S.presets = d.presets || {}; S.prmOpen = !!S.ui.prmOpen;
+  if (S.ui.pairSort) S.pairSort = S.ui.pairSort;
   renderTexts(); setSummary();
 }
 
@@ -856,18 +857,21 @@ function renderPair() {
   const left = h("div", { class: "pair-left" });
   const right = h("div", { class: "pair-right" }, h("div", { class: "placeholder" }, "選擇左側的段落"));
   v.append(h("div", { class: "pair-body" }, left, right));
-  // 點圖
-  const cv = h("canvas");
+  // 段落對應圖：點圖或對應帶，用戶自選（記住選擇）
+  const box = h("div", { class: "plot-box" });
   const tip = h("div", { class: "plot-tip", hidden: true });
   const reset = h("button", { class: "btn ghost plot-btn", hidden: true, onclick: () => S.plot && S.plot.setView(null) }, "復原");
-  left.append(h("div", { class: "plot-wrap" }, h("div", { class: "plot-box" }, cv, tip),
-    h("div", { class: "plot-cap" }, h("span", {}, "橫：" + A.siglum + "　縱：" + B.siglum),
+  const capL = h("span"), hint = h("div", { class: "plot-hint" });
+  left.append(h("div", { class: "plot-wrap" }, box,
+    h("div", { class: "plot-cap" }, capL,
       h("span", { class: "plot-btns" }, reset, h("button", { class: "btn ghost plot-btn", onclick: openBigPlot }, "放大查看"))),
-    h("div", { class: "plot-hint" }, "拖框放大 · 滾輪縮放 · 雙擊復原 · 點擊選段落")));
-  const sortSel = h("select", { style: "height:24px;font-size:11.5px", onchange: e => { S.pairSort = e.target.value; renderPList(); } },
+    hint));
+  const sortSel = h("select", { style: "height:24px;font-size:11.5px", title: "段落列表的排序",
+    onchange: e => { S.pairSort = e.target.value; saveUI({ pairSort: S.pairSort }); renderPList(); } },
     h("option", { value: "a" }, "按" + A.siglum + "順序"), h("option", { value: "b" }, "按" + B.siglum + "順序"),
-    h("option", { value: "m" }, "按長度"), h("option", { value: "s" }, "按差異多少"));
-  sortSel.value = S.pairSort;
+    h("option", { value: "sd" }, "相似度 高→低"), h("option", { value: "sa" }, "相似度 低→高"),
+    h("option", { value: "md" }, "篇幅 長→短"), h("option", { value: "ma" }, "篇幅 短→長"));
+  sortSel.value = PAIR_SORTS[S.pairSort] ? S.pairSort : "a";
   left.append(h("div", { class: "plist-h" }, h("span", { style: "flex:1" }, "平行段落"), sortSel));
   const list = h("div", { class: "plist" });
   left.append(list);
@@ -886,29 +890,44 @@ function renderPair() {
       { label: "匯出本段：Word（彩色）", act: async () => { await ready(); exportPairDocx(false); } },
       { label: "匯出本段：Excel", act: async () => { await ready(); exportPairXlsx(); } },
       { label: "匯出本段：Markdown", act: async () => { await ready(); exportPairMD(false); } },
-      { label: "LLM 分析稿（本段）", act: async () => { await ready(); llmPassage(); } },
+      { label: "給 LLM：本段分析稿", act: async () => { await ready(); llmPassage(); } },
     ];
   });
-  onCtx(cv, () => [
-    { label: "復原點圖", act: () => S.plot && S.plot.setView(null), disabled: !S.plotView },
-    { label: "放大查看", act: openBigPlot },
-  ]);
-  S.pairUI = { cv, list, right };
   S.plotView = S.plotView && S.plotView.key === R.a + "|" + R.b ? S.plotView : null;
-  S.plot = makePlot(cv, tip, { view: S.plotView, onView: v => { S.plotView = v && Object.assign({ key: R.a + "|" + R.b }, v); reset.hidden = !v; } });
-  reset.hidden = !S.plotView;
-  requestAnimationFrame(() => S.plot.draw());
+  // 換圖時換一張新畫布（事件各自綁定），可見範圍沿用
+  const mountChart = () => {
+    const cv = h("canvas"), k = chartKind();
+    box.innerHTML = ""; box.append(cv, tip); tip.hidden = true;
+    capL.innerHTML = ""; capL.append(chartToggle());
+    hint.textContent = chartHint(A, B, k);
+    onCtx(cv, () => [
+      { label: "復原", act: () => S.plot && S.plot.setView(null), disabled: !S.plotView },
+      { label: "改看" + CHARTS[k === "plot" ? "ribbon" : "plot"], act: () => setChartKind(k === "plot" ? "ribbon" : "plot") },
+      { label: "放大查看", act: openBigPlot },
+    ]);
+    S.pairUI.cv = cv;
+    S.plot = makeChart(cv, tip, { view: S.plotView, onView: v => { S.plotView = v && Object.assign({ key: R.a + "|" + R.b }, v); reset.hidden = !v; } });
+    reset.hidden = !S.plotView;
+    requestAnimationFrame(() => S.plot.draw());
+  };
+  S.pairUI = { list, right, mountChart };
+  mountChart();
   renderPList();
 }
 
+// 段落列表的排序（同值時按左欄順序）
+const PAIR_SORTS = {
+  a: (x, y) => x.a0 - y.a0,
+  b: (x, y) => x.b0 - y.b0 || x.a0 - y.a0,
+  sd: (x, y) => y.sim - x.sim || x.a0 - y.a0,
+  sa: (x, y) => x.sim - y.sim || x.a0 - y.a0,
+  md: (x, y) => y.la - x.la || y.lb - x.lb || x.a0 - y.a0,
+  ma: (x, y) => x.la - y.la || x.lb - y.lb || x.a0 - y.a0,
+};
 function renderPList() {
   const R = S.pair, A = T(R.a), B = T(R.b), list = S.pairUI.list;
   list.innerHTML = "";
-  const ps = R.passages.slice();
-  const k = S.pairSort;
-  if (k === "b") ps.sort((x, y) => x.b0 - y.b0);
-  else if (k === "m") ps.sort((x, y) => y.m - x.m);
-  else if (k === "s") ps.sort((x, y) => x.sim - y.sim);
+  const ps = R.passages.slice().sort(PAIR_SORTS[S.pairSort] || PAIR_SORTS.a);
   for (const p of ps) {
     const el = h("div", { class: "pitem" + (p.i === S.pairSel ? " on" : ""), "data-i": p.i, onclick: () => selectPassage(p.i) },
       h("div", { class: "ph" },
@@ -920,79 +939,43 @@ function renderPList() {
   }
 }
 
-// ---- 點圖：每條斜線是一段兩本相同的文字（橫軸左欄、縱軸右欄的位置）。
-// 沿對角線連成一條＝順序抄錄；偏離對角＝移位；斷開＝刪節或增補。
-// 拖框放大、滾輪縮放、雙擊復原、點擊選段落；放大後向後台取該範圍內的全部片段（整本書時概覽圖是抽樣的）。
+// ---- 段落對應圖：兩種畫法，用戶自選（記住選擇），共用可見範圍（左欄 x0–x1、右欄 y0–y1）與所選段落。
+// 點圖：每條斜線是一段兩本相同的文字（橫軸左欄、縱軸右欄的位置）。沿對角線連成一條＝順序抄錄；偏離對角＝移位；斷開＝刪節或增補。
+// 對應帶：上下兩條是兩本全文，每段平行段落是連接兩處的一條帶子。帶子交叉＝移位；條上沒有帶子的地方＝另一本沒有。
+// 放大後向後台取該範圍內的全部片段（整本書時概覽是抽樣的）。
+const CHARTS = { plot: "點圖", ribbon: "對應帶" };
+const CHART_HELP = {
+  plot: "橫軸左欄、縱軸右欄，每條斜線是一段兩本相同的文字",
+  ribbon: "上下兩條是兩本全文，帶子連接兩本相同的段落；交叉的是移位",
+};
+const chartKind = () => CHARTS[S.ui.pairChart] ? S.ui.pairChart : "plot";
+function chartHint(A, B, k) {
+  return k === "ribbon"
+    ? `上條：${A.siglum}　下條：${B.siglum} · 在上條或下條處橫向拖選放大（另一條隨之對到相應處）· 滾輪縮放所在一條 · 雙擊復原 · 點擊選段落`
+    : `橫：${A.siglum}　縱：${B.siglum} · 拖框放大 · 滾輪縮放 · 雙擊復原 · 點擊選段落`;
+}
+function chartToggle() {
+  const k = chartKind();
+  return h("div", { class: "seg sm" }, ...Object.entries(CHARTS).map(([key, label]) =>
+    h("button", { class: key === k ? "on" : "", title: CHART_HELP[key], onclick: () => setChartKind(key) }, label)));
+}
+function setChartKind(k) {
+  if (k === chartKind()) return;
+  saveUI({ pairChart: k });
+  if (S.pairUI && S.pairUI.mountChart) S.pairUI.mountChart();
+  if (S.bigMount) S.bigMount();
+}
 function drawPlot() { if (S.plot) S.plot.draw(); if (S.bigPlot) S.bigPlot.draw(); }
-function makePlot(cv, tip, opt) {
+function makeChart(cv, tip, opt) { return (chartKind() === "ribbon" ? makeRibbon : makePlot)(cv, tip, opt); }
+
+// 兩種圖共用：可見範圍與夾限、範圍標籤、放大後的細部片段、懸停提示、方向鍵、雙擊復原
+function chartBase(cv, tip, opt) {
   const R = S.pair, A = T(R.a), B = T(R.b);
   const full = () => ({ x0: 0, x1: R.nA, y0: 0, y1: R.nB });
-  const P = { v: opt.view ? Object.assign({}, opt.view) : full(), runs: null, labels: null, rect: null, big: !!opt.big };
-  let W = 0, H = 0;
-  const X = i => (i - P.v.x0) / (P.v.x1 - P.v.x0) * W, Y = j => (j - P.v.y0) / (P.v.y1 - P.v.y0) * H;
-  const toData = e => {
-    const r = cv.getBoundingClientRect();
-    return [P.v.x0 + (e.clientX - r.left) / r.width * (P.v.x1 - P.v.x0), P.v.y0 + (e.clientY - r.top) / r.height * (P.v.y1 - P.v.y0)];
-  };
-  const zoomed = () => P.v.x0 > 0 || P.v.y0 > 0 || P.v.x1 < R.nA || P.v.y1 < R.nB;
-  P.draw = () => {
-    W = cv.clientWidth || 316;
-    if (P.big) H = cv.clientHeight || 600;
-    else {
-      const ratio = (P.v.y1 - P.v.y0) / Math.max(1, P.v.x1 - P.v.x0);
-      H = Math.round(Math.max(150, Math.min(300, W * Math.min(1.2, Math.max(0.5, ratio)))));
-      cv.style.height = H + "px";
-    }
-    const dpr = window.devicePixelRatio || 1;
-    cv.width = W * dpr; cv.height = H * dpr;
-    const g = cv.getContext("2d");
-    g.scale(dpr, dpr);
-    const cs = getComputedStyle(document.documentElement);
-    const acc = cs.getPropertyValue("--accent").trim(), t3 = cs.getPropertyValue("--text-3").trim(), t1 = cs.getPropertyValue("--text").trim();
-    const panel = cs.getPropertyValue("--panel").trim();
-    g.lineWidth = 1; g.strokeStyle = t3; g.globalAlpha = .6;
-    g.beginPath();
-    for (const [i, j, L] of (P.runs || R.runs)) {
-      if (i > P.v.x1 || i + L < P.v.x0 || j > P.v.y1 || j + L < P.v.y0) continue;
-      g.moveTo(X(i), Y(j)); g.lineTo(Math.max(X(i) + .8, X(i + L)), Math.max(Y(j) + .8, Y(j + L)));
-    }
-    g.stroke();
-    for (const p of R.passages) {
-      const on = p.i === S.pairSel;
-      g.strokeStyle = acc; g.lineWidth = on ? 2.4 : 1.3; g.globalAlpha = on ? 1 : .55; g.fillStyle = acc;
-      const x = X(p.a0), y = Y(p.b0), w = Math.max(2, X(p.a1) - x), hh = Math.max(2, Y(p.b1) - y);
-      if (x > W || y > H || x + w < 0 || y + hh < 0) continue;
-      g.beginPath(); g.moveTo(x, y); g.lineTo(x + w, y + hh); g.stroke();
-      if (on) { g.globalAlpha = .12; g.fillRect(x - 3, y - 3, w + 6, hh + 6); }
-      if (P.big && w > 40) { g.globalAlpha = .9; g.font = "11px -apple-system, sans-serif"; g.fillText("#" + (p.i + 1), x + w / 2 + 4, y + hh / 2); }
-    }
-    g.globalAlpha = 1;
-    if (P.rect) {
-      const [x0, y0, x1, y1] = P.rect;
-      g.strokeStyle = acc; g.setLineDash([4, 3]); g.lineWidth = 1.2;
-      g.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
-      g.setLineDash([]); g.globalAlpha = .08; g.fillStyle = acc;
-      g.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0)); g.globalAlpha = 1;
-    }
-    // 四角：可見範圍的起止位置
-    if (P.labels) {
-      const [[a0, a1], [b0, b1]] = P.labels;
-      g.font = (P.big ? "12px" : "10px") + " -apple-system, 'PingFang TC', sans-serif";
-      const tag = (t, x, y, al) => {
-        const w = g.measureText(t).width + 6;
-        const bx = al === "r" ? x - w : x;
-        g.globalAlpha = .85; g.fillStyle = panel; g.fillRect(bx, y - 11, w, 14);
-        g.globalAlpha = 1; g.fillStyle = t1; g.fillText(t, bx + 3, y);
-      };
-      tag(A.siglum + " " + locStr(a0, A), 3, H - 4, "l");
-      tag(locStr(a1, A), W - 3, H - 4, "r");
-      tag(B.siglum + " " + locStr(b0, B), 3, 13, "l");
-      if (!P.big) return;
-      tag(B.siglum + " " + locStr(b1, B), 3, H - 22, "l");
-    }
-  };
+  const P = { R, A, B, v: opt.view ? Object.assign({}, opt.view) : full(), runs: null, labels: null, rect: null, big: !!opt.big };
+  P.zoomed = () => P.v.x0 > 0 || P.v.y0 > 0 || P.v.x1 < R.nA || P.v.y1 < R.nB;
   let lblTimer = null, runTimer = null;
-  const refresh = () => {
+  P.refresh = () => {
     clearTimeout(lblTimer); clearTimeout(runTimer);
     lblTimer = setTimeout(async () => {
       try {
@@ -1000,7 +983,7 @@ function makePlot(cv, tip, opt) {
         P.labels = d.locs; P.draw();
       } catch (e) { /* 標籤只是輔助 */ }
     }, 120);
-    if (!zoomed()) { P.runs = null; return; }
+    if (!P.zoomed()) { P.runs = null; return; }
     runTimer = setTimeout(async () => {
       try {
         const v = Object.assign({}, P.v);
@@ -1015,13 +998,107 @@ function makePlot(cv, tip, opt) {
     let { x0, x1, y0, y1 } = v;
     if (x1 - x0 < minSpan) { const c = (x0 + x1) / 2; x0 = c - minSpan / 2; x1 = c + minSpan / 2; }
     if (y1 - y0 < minSpan) { const c = (y0 + y1) / 2; y0 = c - minSpan / 2; y1 = c + minSpan / 2; }
-    const clampX = (a, b) => { const w = Math.min(b - a, R.nA); a = Math.max(0, Math.min(a, R.nA - w)); return [a, a + w]; };
-    const clampY = (a, b) => { const w = Math.min(b - a, R.nB); a = Math.max(0, Math.min(a, R.nB - w)); return [a, a + w]; };
-    [x0, x1] = clampX(x0, x1); [y0, y1] = clampY(y0, y1);
+    const clamp = (a, b, n) => { const w = Math.min(b - a, n); a = Math.max(0, Math.min(a, n - w)); return [a, a + w]; };
+    [x0, x1] = clamp(x0, x1, R.nA); [y0, y1] = clamp(y0, y1, R.nB);
     P.v = { x0: Math.round(x0), x1: Math.round(x1), y0: Math.round(y0), y1: Math.round(y1) };
-    if (!zoomed()) P.runs = null;
-    if (opt.onView) opt.onView(zoomed() ? P.v : null);
-    P.draw(); refresh();
+    if (!P.zoomed()) P.runs = null;
+    if (opt.onView) opt.onView(P.zoomed() ? P.v : null);
+    P.draw(); P.refresh();
+  };
+  P.pick = p => { selectPassage(p.i); if (opt.onPick) opt.onPick(p); };
+  P.showTip = (p, px, py) => {
+    tip.hidden = false;
+    tip.innerHTML = `<b>段落 #${p.i + 1}</b>${p.ord ? "" : " <span class='chip warn'>移位</span>"}<br>` +
+      `${esc(A.siglum)} ${esc(locStr(p.locA, A))}–${esc(locStr(p.locA2, A))}<br>${esc(B.siglum)} ${esc(locStr(p.locB, B))}–${esc(locStr(p.locB2, B))}<br>` +
+      `<span class="muted">${p.la} 字／${p.lb} 字，相同 ≥${pct(p.sim, 0)}</span>`;
+    const bw = cv.parentElement.clientWidth;
+    tip.style.left = Math.max(0, Math.min(px + 12, bw - 190)) + "px";
+    tip.style.top = (py + 14) + "px";
+  };
+  P.colors = () => {
+    const cs = getComputedStyle(document.documentElement), c = n => cs.getPropertyValue(n).trim();
+    return { acc: c("--accent"), t1: c("--text"), t2: c("--text-2"), t3: c("--text-3"), panel: c("--panel"), ok: c("--ok"),
+      focus: c("--focus"), da: c("--da"), db: c("--db"), daLine: c("--da-line"), dbLine: c("--db-line") };
+  };
+  // 畫布尺寸與縮放；回傳 2D 上下文（座標以 CSS 像素計）
+  P.ctx = (W, H) => {
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr;
+    const g = cv.getContext("2d");
+    g.scale(dpr, dpr);
+    return g;
+  };
+  cv.tabIndex = 0;
+  cv.addEventListener("keydown", e => {
+    const d = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
+    if (!d || e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault();
+    const p = stepPassage(d);
+    if (p && opt.onPick) opt.onPick(p);
+  });
+  cv.addEventListener("mouseleave", () => { tip.hidden = true; });
+  cv.addEventListener("dblclick", e => { e.preventDefault(); P.setView(null); });
+  return P;
+}
+
+function makePlot(cv, tip, opt) {
+  const P = chartBase(cv, tip, opt), { R, A, B } = P;
+  let W = 0, H = 0;
+  const X = i => (i - P.v.x0) / (P.v.x1 - P.v.x0) * W, Y = j => (j - P.v.y0) / (P.v.y1 - P.v.y0) * H;
+  const toData = e => {
+    const r = cv.getBoundingClientRect();
+    return [P.v.x0 + (e.clientX - r.left) / r.width * (P.v.x1 - P.v.x0), P.v.y0 + (e.clientY - r.top) / r.height * (P.v.y1 - P.v.y0)];
+  };
+  P.draw = () => {
+    W = cv.clientWidth || 316;
+    if (P.big) H = cv.clientHeight || 600;
+    else {
+      const ratio = (P.v.y1 - P.v.y0) / Math.max(1, P.v.x1 - P.v.x0);
+      H = Math.round(Math.max(150, Math.min(300, W * Math.min(1.2, Math.max(0.5, ratio)))));
+      cv.style.height = H + "px";
+      H = cv.clientHeight || H;  // 去掉邊框，畫布與顯示尺寸一致
+    }
+    const g = P.ctx(W, H), c = P.colors();
+    g.lineWidth = 1; g.strokeStyle = c.t3; g.globalAlpha = .6;
+    g.beginPath();
+    for (const [i, j, L] of (P.runs || R.runs)) {
+      if (i > P.v.x1 || i + L < P.v.x0 || j > P.v.y1 || j + L < P.v.y0) continue;
+      g.moveTo(X(i), Y(j)); g.lineTo(Math.max(X(i) + .8, X(i + L)), Math.max(Y(j) + .8, Y(j + L)));
+    }
+    g.stroke();
+    for (const p of R.passages) {
+      const on = p.i === S.pairSel;
+      g.strokeStyle = c.acc; g.lineWidth = on ? 2.4 : 1.3; g.globalAlpha = on ? 1 : .55; g.fillStyle = c.acc;
+      const x = X(p.a0), y = Y(p.b0), w = Math.max(2, X(p.a1) - x), hh = Math.max(2, Y(p.b1) - y);
+      if (x > W || y > H || x + w < 0 || y + hh < 0) continue;
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + w, y + hh); g.stroke();
+      if (on) { g.globalAlpha = .12; g.fillRect(x - 3, y - 3, w + 6, hh + 6); }
+      if (P.big && w > 40) { g.globalAlpha = .9; g.font = "11px -apple-system, sans-serif"; g.fillText("#" + (p.i + 1), x + w / 2 + 4, y + hh / 2); }
+    }
+    g.globalAlpha = 1;
+    if (P.rect) {
+      const [x0, y0, x1, y1] = P.rect;
+      g.strokeStyle = c.acc; g.setLineDash([4, 3]); g.lineWidth = 1.2;
+      g.strokeRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0));
+      g.setLineDash([]); g.globalAlpha = .08; g.fillStyle = c.acc;
+      g.fillRect(Math.min(x0, x1), Math.min(y0, y1), Math.abs(x1 - x0), Math.abs(y1 - y0)); g.globalAlpha = 1;
+    }
+    // 四角：可見範圍的起止位置
+    if (P.labels) {
+      const [[a0, a1], [b0, b1]] = P.labels;
+      g.font = (P.big ? "12px" : "10px") + " -apple-system, 'PingFang TC', sans-serif";
+      const tag = (t, x, y, al) => {
+        const w = g.measureText(t).width + 6;
+        const bx = al === "r" ? x - w : x;
+        g.globalAlpha = .85; g.fillStyle = c.panel; g.fillRect(bx, y - 11, w, 14);
+        g.globalAlpha = 1; g.fillStyle = c.t1; g.fillText(t, bx + 3, y);
+      };
+      tag(A.siglum + " " + locStr(a0, A), 3, H - 4, "l");
+      tag(locStr(a1, A), W - 3, H - 4, "r");
+      tag(B.siglum + " " + locStr(b0, B), 3, 13, "l");
+      if (!P.big) return;
+      tag(B.siglum + " " + locStr(b1, B), 3, H - 22, "l");
+    }
   };
   const nearest = (x, y) => {
     let best = null, bd = Infinity;
@@ -1035,14 +1112,6 @@ function makePlot(cv, tip, opt) {
     return bd < 0.06 ? best : null;
   };
   let start = null;
-  cv.tabIndex = 0;
-  cv.addEventListener("keydown", e => {
-    const d = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[e.key];
-    if (!d || e.metaKey || e.ctrlKey || e.altKey) return;
-    e.preventDefault();
-    const p = stepPassage(d);
-    if (p && opt.onPick) opt.onPick(p);
-  });
   cv.addEventListener("mousedown", e => { const r = cv.getBoundingClientRect(); start = { px: e.clientX - r.left, py: e.clientY - r.top, e }; });
   const onUp = e => {
     if (!cv.isConnected) { window.removeEventListener("mouseup", onUp); return; }
@@ -1059,7 +1128,7 @@ function makePlot(cv, tip, opt) {
     if (e.target !== cv) return;
     const [x, y] = toData(s0.e);
     const p = nearest(x, y);
-    if (p) { selectPassage(p.i); if (opt.onPick) opt.onPick(p); }
+    if (p) P.pick(p);
   };
   window.addEventListener("mouseup", onUp);
   cv.addEventListener("mousemove", e => {
@@ -1076,44 +1145,202 @@ function makePlot(cv, tip, opt) {
     const p = nearest(x, y);
     if (!p) { tip.hidden = true; cv.style.cursor = "crosshair"; return; }
     cv.style.cursor = "pointer";
-    tip.hidden = false;
-    tip.innerHTML = `<b>段落 #${p.i + 1}</b>${p.ord ? "" : " <span class='chip warn'>移位</span>"}<br>` +
-      `${esc(A.siglum)} ${esc(locStr(p.locA, A))}–${esc(locStr(p.locA2, A))}<br>${esc(B.siglum)} ${esc(locStr(p.locB, B))}–${esc(locStr(p.locB2, B))}<br>` +
-      `<span class="muted">${p.la} 字／${p.lb} 字，相同 ≥${pct(p.sim, 0)}</span>`;
-    const bw = cv.parentElement.clientWidth;
-    tip.style.left = Math.min(px + 12, bw - 190) + "px";
-    tip.style.top = (py + 14) + "px";
+    P.showTip(p, px, py);
   });
-  cv.addEventListener("mouseleave", () => { tip.hidden = true; });
-  cv.addEventListener("dblclick", e => { e.preventDefault(); P.setView(null); });
   cv.addEventListener("wheel", e => {
     e.preventDefault();
     const [x, y] = toData(e);
     const f = e.deltaY > 0 ? 1.25 : 0.8;
     P.setView({ x0: x - (x - P.v.x0) * f, x1: x + (P.v.x1 - x) * f, y0: y - (y - P.v.y0) * f, y1: y + (P.v.y1 - y) * f });
   }, { passive: false });
-  refresh();
+  P.refresh();
   return P;
 }
+
+// 對應帶：上條左欄、下條右欄，各自按可見範圍橫向鋪開；帶子連接一段平行段落在兩本中的位置。
+// 條上：黃（左欄）、藍（右欄）是沒有對應的部分，綠是有對應的；帶子綠＝順序一致，紅＝移位，金＝所選。
+function makeRibbon(cv, tip, opt) {
+  const P = chartBase(cv, tip, opt), { R, A, B } = P;
+  let W = 0, H = 0, T0 = 0, T1 = 0, B0 = 0, B1 = 0, hits = [];
+  const XA = i => (i - P.v.x0) / (P.v.x1 - P.v.x0) * W, XB = j => (j - P.v.y0) / (P.v.y1 - P.v.y0) * W;
+  const clampPx = x => Math.max(-4 * W, Math.min(5 * W, x));
+  P.draw = () => {
+    W = cv.clientWidth || 316;
+    if (P.big) H = cv.clientHeight || 600;
+    else { cv.style.height = "190px"; H = cv.clientHeight || 188; }
+    const lblH = P.big ? 22 : 17, barH = P.big ? 12 : 9;
+    T0 = lblH; T1 = T0 + barH; B1 = H - lblH; B0 = B1 - barH;
+    const mid = (T1 + B0) / 2;
+    const g = P.ctx(W, H), c = P.colors();
+    // 兩條底色：沒有對應的部分（與對照表的黃、藍同義）
+    g.fillStyle = c.da; g.fillRect(0, T0, W, barH);
+    g.fillStyle = c.db; g.fillRect(0, B0, W, barH);
+    // 放大後：兩本相同的每個片段畫一條細線
+    if (P.runs && P.runs.length <= 4000) {
+      g.strokeStyle = c.t3; g.globalAlpha = .3; g.lineWidth = 1; g.beginPath();
+      for (const [i, j, L] of P.runs) {
+        const xa = XA(i + L / 2), xb = XB(j + L / 2);
+        g.moveTo(clampPx(xa), T1); g.lineTo(clampPx(xb), B0);
+      }
+      g.stroke();
+    }
+    // 先畫順序一致的，再畫移位的，所選的最後畫（在最上層）
+    const sel = R.passages[S.pairSel];
+    const order = R.passages.filter(p => p !== sel && p.ord).concat(R.passages.filter(p => p !== sel && !p.ord), sel ? [sel] : []);
+    hits = [];
+    g.font = (P.big ? "11px" : "10px") + " -apple-system, 'PingFang TC', sans-serif";
+    for (const p of order) {
+      let a0 = XA(p.a0), a1 = XA(p.a1), b0 = XB(p.b0), b1 = XB(p.b1);
+      if ((a1 < 0 && b1 < 0) || (a0 > W && b0 > W)) continue;
+      if (a1 - a0 < 1.2) { const m = (a0 + a1) / 2; a0 = m - .6; a1 = m + .6; }
+      if (b1 - b0 < 1.2) { const m = (b0 + b1) / 2; b0 = m - .6; b1 = m + .6; }
+      [a0, a1, b0, b1] = [a0, a1, b0, b1].map(clampPx);
+      const path = new Path2D();
+      path.moveTo(a0, T1); path.bezierCurveTo(a0, mid, b0, mid, b0, B0);
+      path.lineTo(b1, B0); path.bezierCurveTo(b1, mid, a1, mid, a1, T1); path.closePath();
+      const on = p === sel, col = on ? c.focus : p.ord ? c.ok : c.acc;
+      g.fillStyle = col; g.globalAlpha = on ? .38 : p.ord ? .2 : .3; g.fill(path);
+      // 描邊：相鄰的帶子分得開
+      g.strokeStyle = col; g.globalAlpha = on ? 1 : .55; g.lineWidth = on ? 1.3 : .8; g.stroke(path);
+      g.globalAlpha = on ? 1 : .75;
+      g.fillRect(a0, T0, a1 - a0, barH); g.fillRect(b0, B0, b1 - b0, barH);
+      hits.push([p, path, a0, a1, b0, b1]);
+      if (P.big && a1 - a0 > 34 && a1 > 0 && a0 < W) {
+        g.globalAlpha = .9; g.fillStyle = c.t2; g.fillText("#" + (p.i + 1), Math.max(2, a0) + 3, T1 + 13);
+      }
+    }
+    g.globalAlpha = 1;
+    // 拖選的範圍
+    if (P.rect) {
+      const [x0, x1, side] = P.rect, y0 = side === "a" ? 1 : mid, y1 = side === "a" ? mid : H - 1;
+      g.strokeStyle = c.acc; g.setLineDash([4, 3]); g.lineWidth = 1.2;
+      g.strokeRect(Math.min(x0, x1), y0, Math.abs(x1 - x0), y1 - y0);
+      g.setLineDash([]); g.globalAlpha = .08; g.fillStyle = c.acc;
+      g.fillRect(Math.min(x0, x1), y0, Math.abs(x1 - x0), y1 - y0); g.globalAlpha = 1;
+    }
+    // 條外：可見範圍的起止位置
+    g.font = (P.big ? "12px" : "10px") + " -apple-system, 'PingFang TC', sans-serif";
+    g.fillStyle = c.t2;
+    const [[la0, la1], [lb0, lb1]] = P.labels || [[null, null], [null, null]];
+    const put = (t, x, y, right) => { if (!t) return; g.fillText(t, right ? x - g.measureText(t).width : x, y); };
+    put(A.siglum + (la0 ? " " + locStr(la0, A) : ""), 2, T0 - 5);
+    put(la1 && locStr(la1, A), W - 2, T0 - 5, true);
+    put(B.siglum + (lb0 ? " " + locStr(lb0, B) : ""), 2, H - 5);
+    put(lb1 && locStr(lb1, B), W - 2, H - 5, true);
+  };
+  // 指到哪一段：條上按橫向位置，條間按帶子（細的帶子放寬幾個像素）
+  const hitAt = (px, py) => {
+    for (const [lo, hi, k0, k1] of [[T0 - 3, T1 + 2, 2, 3], [B0 - 2, B1 + 3, 4, 5]])
+      if (py >= lo && py <= hi) {
+        for (let k = hits.length - 1; k >= 0; k--) if (px >= hits[k][k0] - 2 && px <= hits[k][k1] + 2) return hits[k][0];
+        return null;
+      }
+    if (py < T1 || py > B0) return null;
+    const g = cv.getContext("2d"), dpr = window.devicePixelRatio || 1;
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    for (let k = hits.length - 1; k >= 0; k--) if (g.isPointInPath(hits[k][1], px * dpr, py * dpr)) return hits[k][0];
+    g.lineWidth = 6;
+    for (let k = hits.length - 1; k >= 0; k--) if (g.isPointInStroke(hits[k][1], px * dpr, py * dpr)) return hits[k][0];
+    return null;
+  };
+  // 一本的某個範圍 → 另一本中與之對應的範圍（按各段平行段落比例推算）
+  const linked = (s, e, side) => {
+    let lo = Infinity, hi = -Infinity;
+    for (const p of R.passages) {
+      const [p0, p1, q0, q1] = side === "a" ? [p.a0, p.a1, p.b0, p.b1] : [p.b0, p.b1, p.a0, p.a1];
+      const o0 = Math.max(s, p0), o1 = Math.min(e, p1);
+      if (o1 <= o0) continue;
+      const k = (q1 - q0) / Math.max(1, p1 - p0);
+      lo = Math.min(lo, q0 + (o0 - p0) * k); hi = Math.max(hi, q0 + (o1 - p0) * k);
+    }
+    if (!isFinite(lo)) return null;
+    const pad = Math.max(10, (hi - lo) * .04);
+    return [lo - pad, hi + pad];
+  };
+  const pos = e => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top, r]; };
+  let start = null;
+  cv.addEventListener("mousedown", e => { const [px, py] = pos(e); start = { px, py, side: py < H / 2 ? "a" : "b" }; });
+  const onUp = e => {
+    if (!cv.isConnected) { window.removeEventListener("mouseup", onUp); return; }
+    if (!start) return;
+    const s0 = start; start = null;
+    if (P.rect) {
+      const [x0, x1, side] = P.rect;
+      P.rect = null;
+      const v = Object.assign({}, P.v);
+      const [k0, k1, o0, o1] = side === "a" ? ["x0", "x1", "y0", "y1"] : ["y0", "y1", "x0", "x1"];
+      const span = v[k1] - v[k0], d0 = v[k0];
+      v[k0] = d0 + Math.min(x0, x1) / W * span; v[k1] = d0 + Math.max(x0, x1) / W * span;
+      const o = linked(v[k0], v[k1], side);
+      if (o) { v[o0] = o[0]; v[o1] = o[1]; }
+      P.setView(v);
+      return;
+    }
+    if (e.target !== cv) return;
+    const p = hitAt(s0.px, s0.py);
+    if (p) P.pick(p);
+  };
+  window.addEventListener("mouseup", onUp);
+  cv.addEventListener("mousemove", e => {
+    const [px, py, r] = pos(e);
+    if (start && Math.abs(px - start.px) > 4) {
+      P.rect = [start.px, Math.max(0, Math.min(r.width, px)), start.side];
+      tip.hidden = true;
+      P.draw();
+      return;
+    }
+    if (start) return;
+    const p = hitAt(px, py);
+    if (!p) { tip.hidden = true; cv.style.cursor = "crosshair"; return; }
+    cv.style.cursor = "pointer";
+    P.showTip(p, px, py);
+  });
+  // 滾輪：縮放指針所在的一條（上半縮放左欄，下半縮放右欄）；橫向滑動則平移那一條
+  cv.addEventListener("wheel", e => {
+    e.preventDefault();
+    const [px, py, r] = pos(e);
+    const [k0, k1] = py < r.height / 2 ? ["x0", "x1"] : ["y0", "y1"];
+    const v = Object.assign({}, P.v), span = v[k1] - v[k0];
+    if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      const d = e.deltaX / r.width * span;
+      v[k0] += d; v[k1] += d;
+    } else {
+      const c = v[k0] + px / r.width * span, f = e.deltaY > 0 ? 1.25 : 0.8;
+      v[k0] = c - (c - v[k0]) * f; v[k1] = c + (v[k1] - c) * f;
+    }
+    P.setView(v);
+  }, { passive: false });
+  P.refresh();
+  return P;
+}
+
 function openBigPlot() {
   const R = S.pair, A = T(R.a), B = T(R.b);
-  const cv = h("canvas", { class: "plot-big" });
+  const box = h("div", { class: "plot-box" });
   const tip = h("div", { class: "plot-tip", hidden: true });
   const info = h("span", { class: "muted" });
+  const tog = h("span"), desc = h("span"), hint = h("span", { class: "muted", style: "font-size:11.5px" });
   const showSel = () => {
     const p = R.passages[S.pairSel];
-    info.textContent = p ? `已選段落 #${p.i + 1}：${A.siglum} ${locStr(p.locA, A)}–${locStr(p.locA2, A)} ↔ ${B.siglum} ${locStr(p.locB, B)}–${locStr(p.locB2, B)}` : "點擊斜線選段落";
+    info.textContent = p ? `已選段落 #${p.i + 1}：${A.siglum} ${locStr(p.locA, A)}–${locStr(p.locA2, A)} ↔ ${B.siglum} ${locStr(p.locB, B)}–${locStr(p.locB2, B)}` : "點擊選段落";
   };
-  const box = h("div", { class: "plot-box" }, cv, tip);
-  const body = [h("div", { class: "ctx-bar" }, h("span", {}, `橫軸：${A.siglum} ${A.name}　縱軸：${B.siglum} ${B.name}`),
-    h("span", { class: "muted", style: "font-size:11.5px" }, "拖框放大 · 滾輪縮放 · 雙擊復原 · 點擊選段落（右側對照隨之切換）")), box, h("div", { style: "margin-top:6px;font-size:12px" }, info)];
-  showSel();
-  const done = dialog("點圖：" + A.siglum + " × " + B.siglum, body, [{ label: "關閉", cls: "primary" }], "xwide");
-  requestAnimationFrame(() => {
-    S.bigPlot = makePlot(cv, tip, { big: true, view: S.plot ? S.plot.v : null, onPick: showSel });
+  // 換圖時換新畫布，可見範圍沿用
+  const mount = () => {
+    const cv = h("canvas", { class: "plot-big" }), k = chartKind();
+    const view = S.bigPlot ? S.bigPlot.v : S.plot ? S.plot.v : null;
+    box.innerHTML = ""; box.append(cv, tip); tip.hidden = true;
+    tog.innerHTML = ""; tog.append(chartToggle());
+    desc.textContent = k === "ribbon" ? `上條：${A.siglum} ${A.name}　下條：${B.siglum} ${B.name}` : `橫軸：${A.siglum} ${A.name}　縱軸：${B.siglum} ${B.name}`;
+    hint.textContent = (k === "ribbon" ? "在上條或下條處橫向拖選放大 · 滾輪縮放所在一條" : "拖框放大 · 滾輪縮放") + " · 雙擊復原 · 點擊選段落（右側對照隨之切換）";
+    S.bigPlot = makeChart(cv, tip, { big: true, view, onPick: showSel });
     S.bigPlot.draw();
-  });
-  done.then(() => { S.bigPlot = null; });
+  };
+  const body = [h("div", { class: "ctx-bar" }, tog, desc, hint), box, h("div", { style: "margin-top:6px;font-size:12px" }, info)];
+  showSel();
+  const done = dialog(A.siglum + " × " + B.siglum + "：段落對應", body, [{ label: "關閉", cls: "primary" }], "xwide");
+  S.bigMount = mount;
+  requestAnimationFrame(mount);
+  done.then(() => { S.bigPlot = null; S.bigMount = null; });
 }
 
 async function selectPassage(i, delay) {
@@ -1141,34 +1368,51 @@ function renderRows(d) {
   let tbl;
   right.append(h("div", { class: "summary" },
     h("span", { html: `段落 #${p.i + 1}：${esc(A.siglum)} ${st.la} 字、${esc(B.siglum)} ${st.lb} 字，相同 <b>${st.eq}</b> 字，異文 <b>${st.nvar}</b> 處，相似度 <b>${pct(st.sim)}</b>` }),
-    sameToggle(() => tbl),
-    h("span", { class: "legend" }, h("span", {}, h("i", { style: "background:var(--da);box-shadow:inset 0 -2px 0 var(--da-line)" }), "只見於" + A.siglum + "（左欄）"),
-      h("span", {}, h("i", { style: "background:var(--db);box-shadow:inset 0 -2px 0 var(--db-line)" }), "只見於" + B.siglum + "（右欄）"),
+    // 各欄自己的底色寫在表頭；這裡只列兩欄共通的標記
+    h("span", { class: "legend" }, sameLegend("兩本相同"),
       h("span", { title: "歸一後相同，原字形不同（繁簡、異體）" }, h("span", { class: "g" }, "字"), " 字形不同"),
       h("span", {}, h("span", { class: "gap a" }), "此處無字")),
-    h("span", { class: "muted", style: "font-size:11.5px" }, "懸停一處：另一欄的對應處加框；雙擊一行：看原文上下文"),
-    h("button", { class: "btn", style: "margin-left:auto", title: "生成一份可貼給任何 LLM 的文檔：本段兩本的對照與分析要求", onclick: () => llmPassage() }, "LLM 分析稿")));
+    h("span", { class: "muted", style: "font-size:11.5px" }, "懸停一處：另一欄的對應處加框；雙擊一行：看原文上下文")));
   const wrap = h("div", { class: "ptable-wrap" });
-  tbl = h("table", { class: "ptable" + (S.ui.showSame === false ? "" : " show-same") },
+  // 表頭兼作圖例：左欄的異文塗黃、右欄的塗藍
+  const head = (t, o, side) => h("th", { class: "th-" + side },
+    h("div", { class: "th-in" }, h("span", { class: "th-name", title: t.siglum + "　" + t.name }, t.siglum + "　" + t.name),
+      h("span", { class: "th-key", title: `塗${side === "a" ? "黃" : "藍"}的是${t.siglum}有而${o.siglum}沒有或不同的文字` },
+        h("i", { class: "d" + side }), "只見於" + t.siglum)));
+  tbl = h("table", { class: "ptable show-same" },
     h("colgroup", {}, h("col", { class: "c-loc" }), h("col"), h("col"), h("col", { class: "c-loc" })),
-    h("thead", {}, h("tr", {}, h("th"), h("th", {}, A.siglum + "　" + A.name), h("th", {}, B.siglum + "　" + B.name), h("th"))));
+    h("thead", {}, h("tr", {}, h("th"), head(A, B, "a"), head(B, A, "b"), h("th"))));
   const tb = h("tbody");
-  tbl.append(tb); wrap.append(tbl); right.append(wrap);
+  const strip = h("canvas");
+  const stripBox = h("div", { class: "dstrip", title: "差異分佈：左道是" + A.siglum + "的異文，右道是" + B.siglum + "的異文；框是表格現在顯示的部分。點擊或拖動，表格跳到該處" }, strip);
+  tbl.append(tb); wrap.append(tbl); right.append(h("div", { class: "ptable-row" }, wrap, stripBox));
   const rows = d.rows;
-  let done = 0;
+  let done = 0, prevA = null, prevB = null;
+  // 位置只在變化時寫出：同頁只寫行，同一行（段）不再寫；完整的位置在懸停提示裡
+  const locShort = (loc, prev, t) => {
+    if (!loc) return "";
+    if (!prev) return locStr(loc, t);
+    if (loc[0] != null) return prev[0] !== loc[0] ? locStr(loc, t) : prev[1] !== loc[1] ? loc[1] + "行" : "";
+    return prev[1] !== loc[1] ? locStr(loc, t) : "";
+  };
   const more = () => {
     let html = "";
     const end = Math.min(rows.length, done + 300);
     for (; done < end; done++) {
       const r = rows[done];
-      html += `<tr data-i="${done}" title="雙擊看原文上下文"><td class='loc'>` + esc(locStr(r.la, A)) + "</td><td>" + rowSide(r.a, "a", A, r.la) + "</td><td>" +
-        rowSide(r.b, "b", B, r.lb) + "</td><td class='loc'>" + esc(locStr(r.lb, B)) + "</td></tr>";
+      html += `<tr data-i="${done}" title="雙擊看原文上下文"><td class='loc' title="${esc(locStr(r.la, A))}">` + esc(locShort(r.la, prevA, A)) + "</td><td>" +
+        rowSide(r.a, "a", A, r.la) + "</td><td>" + rowSide(r.b, "b", B, r.lb) +
+        `</td><td class='loc' title="${esc(locStr(r.lb, B))}">` + esc(locShort(r.lb, prevB, B)) + "</td></tr>";
+      prevA = r.la || prevA; prevB = r.lb || prevB;
     }
     tb.insertAdjacentHTML("beforeend", html);
   };
   more();
+  const ds = diffStrip(strip, rows, wrap, tb, i => { while (done <= i && done < rows.length) more(); });
+  S.pairUI.drawStrip = ds.draw;
   wrap.addEventListener("scroll", () => {
     if (done < rows.length && wrap.scrollTop + wrap.clientHeight > wrap.scrollHeight - 800) more();
+    ds.later();
   });
   // 懸停一段：同一行另一欄的對應段加框
   let cpEls = [];
@@ -1202,14 +1446,9 @@ function renderRows(d) {
     ];
   });
 }
-// 「相同文字著色」開關（對照表、原文預覽、檢索結果共用）
-function sameToggle(getTarget) {
-  const c = h("input", { type: "checkbox", onchange: e => {
-    saveUI({ showSame: e.target.checked });
-    $$(".show-same-able").concat([getTarget && getTarget()]).forEach(el => el && el.classList.toggle("show-same", e.target.checked));
-  } });
-  c.checked = S.ui.showSame !== false;
-  return h("label", { class: "chk", title: "把與對方相同的文字塗上淡綠色" }, c, h("i", { class: "same-swatch" }), "相同文字著色");
+// 相同的文字一律塗淡綠（不再設開關）；圖例裡的這一項
+function sameLegend(label) {
+  return h("span", {}, h("i", { class: "same-swatch" }), label);
 }
 function rowSide(segs, side, t, loc) {
   const pg = { p: loc && loc[0] };
@@ -1224,8 +1463,109 @@ function rowSide(segs, side, t, loc) {
   return out;
 }
 
+// ---- 差異分佈條：整段對照表的縮略圖，貼在表格右側。
+// 左道畫左欄的異文、右道畫右欄的，各行按估計的行高排開（字數÷每行字數）；
+// 框出表格現在可見的部分；點擊或拖動，表格跳到該處（還沒載入的行先載入）。
+function diffStrip(cv, rows, wrap, tb, ensure) {
+  const n = rows.length;
+  // 各行兩欄的字數，及異文在行內的字位置
+  const info = rows.map(r => {
+    const t = [];
+    const side = (segs, s) => {
+      let off = 0;
+      for (const [tag, text] of segs) {
+        if (tag !== "=" && text) t.push(s, off, off + text.length);
+        off += text.length;
+      }
+      return off;
+    };
+    return { la: side(r.a, 0), lb: side(r.b, 1), t };
+  });
+  let cpl = 0, cum = new Float64Array(n + 1);
+  const PAD = 0.25;  // 每行上下留白，約合四分之一行
+  // 行高的單位是「一行字」；欄寬變了才重算
+  const layout = () => {
+    const td = tb.rows[0] && tb.rows[0].cells[1];
+    const c = Math.max(6, Math.floor((((td && td.clientWidth) || 360) - 20) / 16));
+    if (Math.abs(c - cpl) < 0.5) return;
+    cpl = c;
+    for (let i = 0; i < n; i++) cum[i + 1] = cum[i] + Math.max(1, Math.ceil(Math.max(info[i].la, info[i].lb) / cpl)) + 2 * PAD;
+  };
+  const headH = () => { const th = wrap.querySelector("thead"); return th ? th.offsetHeight : 0; };
+  // 表格內容中的縱座標 y → [第幾行, 行內比例]（二分查已渲染的行）
+  const rowAt = y => {
+    const trs = tb.rows;
+    if (!trs.length) return [0, 0];
+    const base = wrap.getBoundingClientRect().top - wrap.scrollTop;
+    const top = el => el.getBoundingClientRect().top - base;
+    let lo = 0, hi = trs.length - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (top(trs[mid]) <= y) lo = mid; else hi = mid - 1; }
+    return [lo, Math.max(0, Math.min(1, (y - top(trs[lo])) / (trs[lo].offsetHeight || 1)))];
+  };
+  const uOf = ([i, f]) => cum[i] + f * (cum[i + 1] - cum[i]);
+  const draw = () => {
+    if (!cv.isConnected) return;
+    layout();
+    const W = cv.clientWidth, H = cv.clientHeight;
+    if (!W || !H) return;
+    const dpr = window.devicePixelRatio || 1;
+    cv.width = W * dpr; cv.height = H * dpr;
+    const g = cv.getContext("2d");
+    g.scale(dpr, dpr);
+    const cs = getComputedStyle(document.documentElement);
+    const col = [cs.getPropertyValue("--da-line").trim(), cs.getPropertyValue("--db-line").trim()];
+    const k = H / (cum[n] || 1), lane = (W - 6) / 2;
+    g.globalAlpha = .85;
+    for (let i = 0; i < n; i++) {
+      const t = info[i].t, y = cum[i] + PAD;
+      for (let j = 0; j < t.length; j += 3) {
+        g.fillStyle = col[t[j]];
+        const y0 = (y + t[j + 1] / cpl) * k, y1 = (y + t[j + 2] / cpl) * k;
+        g.fillRect(t[j] ? 4 + lane : 2, y0, lane, Math.max(2, y1 - y0));
+      }
+    }
+    // 可見範圍（整張表都看得到時不畫）
+    if (tb.rows.length < n || wrap.scrollHeight > wrap.clientHeight + 1) {
+      const y0 = uOf(rowAt(wrap.scrollTop + headH())) * k, y1 = uOf(rowAt(wrap.scrollTop + wrap.clientHeight)) * k;
+      const hh = Math.max(4, y1 - y0);
+      g.globalAlpha = .08; g.fillStyle = cs.getPropertyValue("--text").trim(); g.fillRect(0, y0, W, hh);
+      g.globalAlpha = .55; g.strokeStyle = cs.getPropertyValue("--text-2").trim(); g.lineWidth = 1;
+      g.strokeRect(.5, y0 + .5, W - 1, hh - 1);
+    }
+  };
+  let timer = null;
+  const later = () => { if (!timer) timer = setTimeout(() => { timer = null; draw(); }, 40); };
+  // 跳到縮略圖上的 y：該處置於表格可見部分的正中
+  const jump = e => {
+    const r = cv.getBoundingClientRect();
+    const u = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)) * (cum[n] || 1);
+    let lo = 0, hi = n - 1;
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (cum[mid] <= u) lo = mid; else hi = mid - 1; }
+    ensure(lo);
+    const tr = tb.rows[lo];
+    if (!tr) return;
+    const f = Math.max(0, Math.min(1, (u - cum[lo]) / (cum[lo + 1] - cum[lo] || 1)));
+    const y = tr.getBoundingClientRect().top - wrap.getBoundingClientRect().top + wrap.scrollTop + f * tr.offsetHeight;
+    wrap.scrollTop = Math.max(0, y - (headH() + wrap.clientHeight) / 2);
+    later();
+  };
+  let dragging = false;
+  cv.addEventListener("pointerdown", e => {
+    if (e.button) return;
+    dragging = true;
+    try { cv.setPointerCapture(e.pointerId); } catch (err) { /* 沒有可捕獲的指針時照常跳轉 */ }
+    jump(e);
+  });
+  cv.addEventListener("pointermove", e => { if (dragging) jump(e); });
+  const stop = () => { dragging = false; };
+  cv.addEventListener("pointerup", stop); cv.addEventListener("pointercancel", stop); cv.addEventListener("lostpointercapture", stop);
+  if (window.ResizeObserver) new ResizeObserver(later).observe(cv.parentElement);
+  draw();
+  return { draw, later };
+}
+
 // ================================================================ 原文預覽
-const CTX_PADS = [[80, "±80 字"], [300, "±300 字"], [800, "±800 字"], [2000, "±2000 字"]];
+const CTX_PADS =[[80, "±80 字"], [300, "±300 字"], [800, "±800 字"], [2000, "±2000 字"]];
 // 上下文 → HTML：保留原來的分行；與參照相同的字加 .s，所選位置加 .ctx-f（無字處畫一道插入號）
 function ctxHTML(it) {
   const cps = Array.from(it.text);
@@ -1425,7 +1765,7 @@ async function openContext(items, opt) {
   let pad = S.ui.ctxPad || 300;
   const modes = [];        // 各欄目前看文字還是原件；改上下文長度重載時沿用
   let loaded = null;       // 當前顯示的內容，供匯出
-  const body = h("div", { class: "ctx-wrap show-same-able" + (S.ui.showSame === false ? "" : " show-same") + (items.length === 2 ? " cols" : "") });
+  const body = h("div", { class: "ctx-wrap show-same" + (items.length === 2 ? " cols" : "") });
   const padSeg = h("div", { class: "seg" });
   const load = async () => {
     $$("button", padSeg).forEach(b => b.classList.toggle("on", +b.dataset.p === pad));
@@ -1445,8 +1785,9 @@ async function openContext(items, opt) {
   for (const [p, lab] of CTX_PADS)
     padSeg.append(h("button", { "data-p": p, onclick: () => { pad = p; saveUI({ ctxPad: p }); load(); } }, lab));
   const multi = items.length > 1;
-  const bar = h("div", { class: "ctx-bar" }, h("span", { class: "muted" }, "上下文"), padSeg, multi ? sameToggle(() => body) : null,
+  const bar = h("div", { class: "ctx-bar" }, h("span", { class: "muted" }, "上下文"), padSeg,
     h("span", { class: "legend" },
+      multi ? sameLegend("與參照相同") : null,
       multi ? h("span", {}, h("i", { class: "plain-swatch" }), "未著色＝不同或參照所無") : null,
       h("span", {}, h("i", { class: "focus-swatch" }), "所選位置"),
       h("span", {}, h("span", { class: "ctx-caret", style: "margin:0 4px 0 2px" }), "此處無字"),
@@ -1714,7 +2055,7 @@ function pdfViewer(id, it, compared) {
     pages.forEach(pg => io.observe(pg.el));
     box.focus({ preventScroll: true });
   }
-  // 當前頁連同標注存成 PNG（標注按畫面上的樣子畫進圖裡；「相同文字著色」關閉時不畫淡綠）
+  // 當前頁連同標注存成 PNG（標注按畫面上的樣子畫進圖裡；）
   async function snapshot() {
     const pg = pages[cur - 1];
     const res = await fetch(`/api/pageimg?id=${encodeURIComponent(id)}&p=${pg.n}&w=2000&t=${DK.token}`);
@@ -1832,6 +2173,8 @@ function pairExportMenu(btn) {
     "-",
     { label: "平行段落列表（Excel）", act: exportPassagesXlsx },
     { label: "平行段落列表（CSV）", act: exportPassagesCSV },
+    "-",
+    { label: "給 LLM：本段分析稿", act: llmPassage, disabled: !S.pairRows },
   ]);
 }
 // 對照表的一側 → Word 文字片段（相同淡綠、此側獨有黃或藍；無字處用 ‸）
@@ -1955,7 +2298,6 @@ function renderCollBar() {
         h("span", { class: "muted" }, `　${S.coll.all.length} 處`)),
       h("button", { class: "btn ghost", onclick: () => { S.coll = null; collFollow(true); } }, "改為全文對校"),
       h("span", { class: "sp" }),
-      h("button", { class: "btn", onclick: e => llmMenu(e.currentTarget) }, "給 LLM ▾"),
       h("button", { class: "btn", onclick: e => collExportMenu(e.currentTarget) }, "匯出 ▾"));
     return;
   }
@@ -1988,8 +2330,7 @@ function renderCollBar() {
   bar.append(h("span", { class: "lbl" }, "底本"), sel, h("span", { class: "lbl" }, "校本"), chips,
     h("span", { class: "sp" }));
   if (S.coll) {
-    bar.append(h("button", { class: "btn", onclick: e => llmMenu(e.currentTarget) }, "給 LLM ▾"),
-      h("button", { class: "btn", onclick: e => collExportMenu(e.currentTarget) }, "匯出 ▾"));
+    bar.append(h("button", { class: "btn", onclick: e => collExportMenu(e.currentTarget) }, "匯出 ▾"));
   }
 }
 
@@ -2763,7 +3104,7 @@ function renderStats(pane) {
   html += "</table>";
   html += "<h3>四、判讀後的統計（拉赫曼方法）</h3>";
   if (!st.judged) {
-    html += "<p class='note'>還沒有判斷過的異文" + (S.onlyStar ? "（或判過但未標 ★）" : "") + "。到「異文表」裡：點選某一本的讀法定為正讀，並給不易獨立產生的錯誤標 ★；或用「給 LLM → 判讀稿」請 LLM 先判一遍，再把回答導入（須逐條覆核）。程序會據此計算共同錯誤與分離錯誤。</p>";
+    html += "<p class='note'>還沒有判斷過的異文" + (S.onlyStar ? "（或判過但未標 ★）" : "") + "。到「異文表」裡：點選某一本的讀法定為正讀，並給不易獨立產生的錯誤標 ★；或用「匯出 → 給 LLM：判讀稿」請 LLM 先判一遍，再把回答導入（須逐條覆核）。程序會據此計算共同錯誤與分離錯誤。</p>";
   } else {
     html += `<p class='note'>共 ${st.judged} 處已判斷${S.onlyStar ? "且標為指示性錯誤" : ""}。與「正讀」不同的讀法即視為錯誤。</p>`;
     html += "<table class='st'><tr><th>本子</th>" + C.all.map(x => `<th>${sg(x)}</th>`).join("") + "</tr><tr><th>錯誤數</th>" +
@@ -2780,7 +3121,7 @@ function renderStats(pane) {
         [1, 2, 3, 5].map(n => `<option value="${n}"${n === minN ? " selected" : ""}>至少 ${n} 處共同錯誤</option>`).join("") + "</select></h3>" +
         `<div class="stemma-box">${sk.svg}<pre class="stemma-txt">${esc(sk.text)}</pre></div>` +
         "<p class='note'>這只是把上面的共同錯誤畫成樹：互相包含或不相交的組成為次祖本（希臘字母，數字為共同錯誤處數），虛線表示「疑抄自上一本」。它不是結論——譜系要由你根據錯誤的性質斟酌，" +
-        "也可以用「給 LLM → 譜系討論稿」交給 LLM 評估。</p>";
+        "也可以用「匯出 → 給 LLM：譜系討論稿」交給 LLM 評估。</p>";
       if (sk.conflicts.length)
         html += `<div class="hint">與草圖不相容而未畫入的組：${sk.conflicts.map(([g, b]) => `<b>${esc(gs(g.ids))}</b>（${g.n} 處，與 ${esc(gs(b.ids))} 交錯）`).join("；")}。可能是交叉傳承，或其中有判斷錯誤，值得逐條複查。</div>`;
     }
@@ -2821,6 +3162,8 @@ function collExportMenu(btn) {
     { label: "對齊表（CollateX JSON 格式）", act: exportCollateX },
     "-",
     { label: "全部數據（JSON）", act: () => saveText("對校數據.json", JSON.stringify({ coll: S.coll, marks: S.marks, texts: S.coll.all.map(T) }, null, 1), "application/json") },
+    "-",
+    ...llmItems(),
   ]);
 }
 function exportApparatus() {
@@ -3032,20 +3375,20 @@ function shareDoc(title, text, filename) {
     "|", { label: "關閉" },
     { label: "複製", cls: "primary", act: async () => { const ok = await copyText(text); toast(ok ? "已複製，可貼給 LLM" : "複製失敗，請存為文件", !ok); return false; } }], "xwide");
 }
-function llmMenu(btn) {
-  menu(btn, [
-    { label: "判讀稿：請 LLM 判讀異文…", act: async () => {
+// 多本對校「匯出」選單裡給 LLM 的一節：生成文檔，以及導入 LLM 的判讀回答
+function llmItems() {
+  return [
+    { label: "給 LLM：判讀稿（請 LLM 判讀異文）…", act: async () => {
       const loci = await scopeDialog("判讀稿：選擇要交給 LLM 的異文", "生成");
       if (loci) shareDoc("判讀稿", llmPrompt(loci), `異文判讀稿_${T(S.coll.base).siglum}`);
     } },
-    { label: "史源分析稿（據同文分佈與同文段落）", act: () => shareDoc("史源分析稿", sourcePrompt(), `史源分析稿_${T(S.coll.base).siglum}`) },
-    { label: "譜系討論稿（據已判斷的錯誤）", act: () => {
+    { label: "給 LLM：史源分析稿（據同文分佈與同文段落）", act: () => shareDoc("史源分析稿", sourcePrompt(), `史源分析稿_${T(S.coll.base).siglum}`) },
+    { label: "給 LLM：譜系討論稿（據已判斷的錯誤）", act: () => {
       const d = stemmaPrompt();
       if (d) shareDoc("譜系討論稿", d, `譜系討論稿_${T(S.coll.base).siglum}`);
     } },
-    "-",
     { label: "導入 LLM 的判讀回答…", act: llmImport },
-  ]);
+  ];
 }
 // 選擇範圍：全部、未判斷、異文表當前篩選、編號區間
 function scopeDialog(title, okLabel) {
@@ -3276,7 +3619,7 @@ function renderSeg() {
     h("label", { title: "與檢索句相比至少有多少相同（容許異文、脫衍）" }, "最低相似度 ", minIn, minOut),
     h("label", { title: "對校時，從命中處向外延伸的範圍；無標點的文本按字數" }, "對校片段 ", mode, "　至多 ", nIn, nOut),
     h("span", { class: "muted", style: "margin-left:auto;font-size:11.5px" }, "輸入即檢索；清空輸入框（或按 Esc）即清空結果"))));
-  const res = h("div", { class: "seg-res show-same-able" + (S.ui.showSame === false ? "" : " show-same") });
+  const res = h("div", { class: "seg-res show-same" });
   const foot = h("div", { class: "seg-foot" });
   v.append(res, foot);
   S.segUI = { q, scope, minIn, mode, nIn, res, foot };
@@ -3359,9 +3702,9 @@ function drawSearch() {
   const top = U.res.scrollTop;
   U.res.innerHTML = "";
   let n = 0;
-  U.res.append(h("div", { class: "seg-legend" }, sameToggle(() => U.res),
-    h("span", { class: "legend" }, h("span", {}, h("i", { class: "focus-swatch" }), "命中處")),
-    h("span", { class: "muted" }, "淡綠＝與檢索句相同的字；雙擊一處：看原文上下文（已選參照時與參照並排對照）")));
+  U.res.append(h("div", { class: "seg-legend" },
+    h("span", { class: "legend" }, sameLegend("與檢索句相同"), h("span", {}, h("i", { class: "focus-swatch" }), "命中處")),
+    h("span", { class: "muted" }, "雙擊一處：看原文上下文（已選參照時與參照並排對照）")));
   for (const g of st.results) {
     const t = T(g.id);
     if (!t) continue;
@@ -3499,7 +3842,7 @@ function searchExportMenu(btn) {
     { label: `已選 ${n} 處：Excel`, act: () => exportSearch("xlsx", "sel") },
     { label: `已選 ${n} 處：TXT`, act: () => exportSearch("txt", "sel") },
     "-",
-    { label: `LLM 分析稿（已選 ${n} 處）`, act: searchPrompt },
+    { label: `給 LLM：分析稿（已選 ${n} 處）`, act: searchPrompt },
   ]);
 }
 function hitMenu(btn, k) { menu(btn, hitItems(k)); }
@@ -3694,6 +4037,8 @@ async function init() {
     uploadFiles(Array.from(e.dataTransfer.files));
   });
   window.addEventListener("resize", () => { if (S.pair && S.pairUI && S.tab === "pair") drawPlot(); });
+  // 深淺色切換：畫布上的顏色是畫時取的，需重畫
+  if (window.matchMedia) matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { drawPlot(); if (S.pairUI && S.pairUI.drawStrip) S.pairUI.drawStrip(); });
   try { await loadState(); } catch (e) { fail(e); }
   switchTab(S.ui.tab || "pair");
 }

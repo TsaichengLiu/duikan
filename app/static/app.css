@@ -214,13 +214,24 @@ label.chk input { accent-color: var(--accent); margin: 0; }
   background: var(--chrome-2); color: var(--text-2); white-space: nowrap; }
 .chip.warn { background: var(--accent-soft); color: var(--accent); }
 .pair-right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.ptable-wrap { flex: 1; overflow: auto; min-height: 0; }
+.ptable-row { flex: 1; min-height: 0; display: flex; }
+.ptable-wrap { flex: 1; overflow: auto; min-height: 0; min-width: 0; }
+/* 差異分佈條：表格右側的縮略圖 */
+.dstrip { width: 18px; flex: none; position: relative; border-left: 1px solid var(--line); background: var(--chrome); }
+.dstrip canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: pointer; touch-action: none; }
 table.ptable { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .ptable th { position: sticky; top: 0; background: var(--paper); z-index: 2; text-align: left;
   font: 600 12px var(--ui); color: var(--text-2); padding: 8px 10px; border-bottom: 1px solid var(--line-2); }
 .ptable td { vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line);
   font: 16px/1.85 var(--serif); word-break: break-all; }
 .ptable td.loc { font: 11px/1.6 var(--ui); color: var(--text-3); width: 64px; padding-top: 11px; white-space: nowrap; }
+/* 表頭兼作圖例：欄名右側是本欄異文的底色，底線同色 */
+.ptable th.th-a { box-shadow: inset 0 -2px 0 var(--da-line); }
+.ptable th.th-b { box-shadow: inset 0 -2px 0 var(--db-line); }
+.th-in { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.th-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.th-key { flex: none; font: 400 11px var(--ui); color: var(--text-3); white-space: nowrap; }
+.th-key i { display: inline-block; width: 16px; height: 10px; border-radius: 3px; vertical-align: -1px; margin-right: 4px; }
 .ptable col.c-loc { width: 66px; }
 .ptable tr:hover td { background: rgba(120, 100, 70, .035); }
 .d { border-radius: 3px; padding: 1px 0; }
@@ -501,6 +512,10 @@ svg.stemma text.cnt { font: 10px var(--ui); fill: var(--text-3); }
 .plot-box { position: relative; }
 .plot-box canvas { user-select: none; -webkit-user-select: none; }
 .plot-btns { display: inline-flex; gap: 2px; }
+/* 點圖／對應帶 切換 */
+.seg.sm { padding: 1px; border-radius: 6px; gap: 1px; }
+.seg.sm button { height: 19px; padding: 0 7px; font-size: 11px; border-radius: 5px; }
+.plot-cap { align-items: center; }
 .plot-btn { height: 20px; padding: 0 6px; font-size: 11px; }
 .plot-hint { font-size: 10.5px; color: var(--text-3); padding: 1px 2px 0; }
 .plot-tip { position: absolute; z-index: 5; pointer-events: none; background: var(--panel); border: 1px solid var(--line-2);
